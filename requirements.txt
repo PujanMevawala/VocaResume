@@ -11,3 +11,9 @@ crewai
 opencv-python-headless
 openai>=1.40.0
 streamlit-extras
+pytest
+vosk
+pyttsx3
+streamlit-audiorecorder
+pydub
+watchdog
