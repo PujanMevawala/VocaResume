@@ -18,3 +18,6 @@ pyttsx3
 streamlit-audiorecorder
 pydub
 watchdog
+langchain-openai
+langchain-groq
+langchain-google-genai
