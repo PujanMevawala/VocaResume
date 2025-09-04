@@ -12,6 +12,7 @@ opencv-python-headless
 openai>=1.40.0
 streamlit-extras
 pytest
+requests
 vosk
 pyttsx3
 streamlit-audiorecorder

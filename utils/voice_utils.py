@@ -30,7 +30,29 @@ import shutil
 import subprocess
 from typing import Optional, Tuple
 import streamlit as st
+import os, zipfile, io, requests
 
+def ensure_vosk_model():
+    target = os.environ.get("VOSK_MODEL_PATH", "./models/vosk")
+    marker = os.path.join(target, ".installed")
+    if os.path.exists(marker):
+        return
+    os.makedirs(target, exist_ok=True)
+    url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+    resp = requests.get(url, timeout=120)
+    resp.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+        # Extract into a temp folder first
+        z.extractall(target)
+    # Optional: symlink or move inner folder contents up if structure differs
+    with open(marker, "w") as f:
+        f.write("ok")
+    print("Vosk model installed at", target)
+
+try:
+    ensure_vosk_model()
+except Exception as e:
+    print("Vosk model download skipped:", e)
 # Optional imports guarded
 try:  # Audio recording widget
     from audiorecorder import audiorecorder  # type: ignore
