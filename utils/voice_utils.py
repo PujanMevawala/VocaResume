@@ -31,6 +31,7 @@ import subprocess
 from typing import Optional, Tuple
 import streamlit as st
 import os, zipfile, io, requests
+from textwrap import shorten
 
 def ensure_vosk_model():
     target = os.environ.get("VOSK_MODEL_PATH", "./models/vosk")
@@ -204,10 +205,12 @@ def text_to_speech(text: str) -> Optional[bytes]:
     if not text:
         return None
     if _TTS_ENGINE is None:
+        # Browser SpeechSynthesis API fallback (no audio bytes returned, plays client-side)
+        _browser_fallback(text)
         if _PYTTSX3_AVAILABLE:
-            st.error("Failed to init pyttsx3 engine.")
+            st.warning("Local TTS engine unavailable in this environment; using browser speech instead.")
         else:
-            st.info("pyttsx3 not installed. Install it for offline text-to-speech.")
+            st.info("pyttsx3 not installed; using browser speech fallback if supported.")
         return None
 
     # pyttsx3 saves to a file; ensure WAV output and normalize if driver writes AIFF
@@ -238,6 +241,7 @@ def text_to_speech(text: str) -> Optional[bytes]:
             return data
     except Exception as e:
         st.error(f"TTS synthesis failed: {e}")
+        _browser_fallback(text, suppress_msg=True)
     finally:
         if fname and os.path.exists(fname):
             with contextlib.suppress(Exception):
@@ -283,6 +287,34 @@ def text_to_speech(text: str) -> Optional[bytes]:
     except Exception as e:
         st.error(f"macOS TTS fallback failed: {e}")
         return None
+
+
+def _browser_fallback(text: str, suppress_msg: bool = False) -> None:
+    """Inject a small snippet that uses the browser's SpeechSynthesis if available.
+    No return (client plays speech). Safe no-op if components disabled.
+    """
+    try:
+        safe = shorten(text, width=800, placeholder="…")  # avoid gigantic injection
+        st.components.v1.html(
+            f"""
+            <script>
+            (function() {{
+              if (!('speechSynthesis' in window)) return;
+              const u = new SpeechSynthesisUtterance({json.dumps(safe)});
+              u.rate = 1; u.pitch = 1; u.volume = 1;
+              window.speechSynthesis.cancel();
+              window.speechSynthesis.speak(u);
+            }})();
+            </script>
+            """,
+            height=0,
+        )
+        if not suppress_msg and not st.session_state.get("__browser_tts_notice", False):
+            st.caption("(Browser speech synthesis used)")
+            st.session_state["__browser_tts_notice"] = True
+    except Exception:
+        if not suppress_msg:
+            st.info("Speech playback unavailable.")
 
 
 def voice_enabled() -> bool:
