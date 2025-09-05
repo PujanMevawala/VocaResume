@@ -78,6 +78,25 @@ def _render_landing_page():
         unsafe_allow_html=True,
     )
 
+    # CTA Section (moved above Core Features) – single functional Streamlit button centered
+    st.markdown(
+        """
+        <div class=\"cta-band\">
+            <div class=\"cta-copy\">
+                <h3>Ready to analyze your resume?</h3>
+                <p>Upload your PDF and paste a target job description to get instant insights.</p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    cta_cols = st.columns([1,1,1])
+    with cta_cols[1]:
+        if st.button("🚀 Start Your Journey", key="landing_start_top", help="Go to main app", use_container_width=True):
+            st.session_state["app_view"] = "main"
+            st.rerun()
+
     # Core Features
     st.markdown(
         """
@@ -105,23 +124,7 @@ def _render_landing_page():
         unsafe_allow_html=True,
     )
 
-    # CTA Section
-    st.markdown(
-        """
-        <div class="cta-band">
-            <div class="cta-copy">
-                <h3>Ready to analyze your resume?</h3>
-                <p>Upload your PDF and paste a target job description to get instant insights.</p>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Replace broken JS CTA button with Streamlit button
-    if st.button("🚀 Start Your Journey", key="landing_start", help="Go to main app"):
-        st.session_state["app_view"] = "main"
-        st.rerun()
+    # (CTA moved above features)
 
     # How It Works
     st.markdown(
