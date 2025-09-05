@@ -20,7 +20,7 @@ from services.model_service import get_model_response
 from utils.file_utils import input_pdf_setup
 from agents.agent_factory import create_agents
 from tasks.task_factory import create_tasks, get_task_from_query
-from utils.voice_utils import record_audio, speech_to_text, text_to_speech, voice_enabled
+from utils.voice_utils import record_audio, speech_to_text, text_to_speech, voice_enabled, voice_stack_report
 
 from config import settings
 warnings.filterwarnings("ignore")
@@ -349,6 +349,11 @@ if voice_mode and voice_enabled():
     st.markdown(vr_html, unsafe_allow_html=True)
 elif voice_mode and not voice_enabled():
     st.info("Voice dependencies missing (vosk/pyttsx3/audiorecorder/pydub).")
+
+# Diagnostics expander when Voice Debug enabled
+if os.getenv("VOICE_DEBUG", "").lower() in {"1","true","yes"}:
+    with st.expander("Voice Diagnostics"):
+        st.json(voice_stack_report())
 
 progress_bar = st.progress(0, text="Idle")
 

@@ -1,4 +1,4 @@
-streamlit
+streamlit==1.38.0  # pinned for static asset stability on Render
 pdf2image
 Pillow
 python-dotenv
@@ -6,6 +6,8 @@ groq
 google-generativeai
 streamlit-option-menu
 plotly
+# poppler-utils is a system package; keeping line for reference but not installable via pip.
+# Remove or handle externally in deployment. pdf2image may require it; on Render consider disabling preview features.
 poppler-utils
 crewai
 opencv-python-headless

@@ -30,25 +30,42 @@ import shutil
 import subprocess
 from typing import Optional, Tuple
 import streamlit as st
-import os, zipfile, io, requests
+import os, zipfile, io, requests, threading
 from textwrap import shorten
 
+_vosk_dl_lock = threading.Lock()
+
 def ensure_vosk_model():
+    """Download a small Vosk model if not already present.
+
+    Env Vars:
+      VOSK_MODEL_PATH : target directory (default ./models/vosk)
+      VOSK_MODEL_URL  : override download URL (zip)
+      VOSK_SKIP_DL    : if set to 1/true, skip download
+    """
+    if os.getenv("VOSK_SKIP_DL", "").lower() in {"1","true","yes"}:
+        return
     target = os.environ.get("VOSK_MODEL_PATH", "./models/vosk")
     marker = os.path.join(target, ".installed")
     if os.path.exists(marker):
         return
-    os.makedirs(target, exist_ok=True)
-    url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
-    resp = requests.get(url, timeout=120)
-    resp.raise_for_status()
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-        # Extract into a temp folder first
-        z.extractall(target)
-    # Optional: symlink or move inner folder contents up if structure differs
-    with open(marker, "w") as f:
-        f.write("ok")
-    print("Vosk model installed at", target)
+    with _vosk_dl_lock:
+        if os.path.exists(marker):  # double-check
+            return
+        os.makedirs(target, exist_ok=True)
+        url = os.environ.get("VOSK_MODEL_URL", "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip")
+        try:
+            resp = requests.get(url, timeout=180)
+            resp.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+                z.extractall(target)
+            with open(marker, "w") as f:
+                f.write("ok")
+            print("[voice] Vosk model installed at", target)
+        except Exception as e:
+            # Leave a partial marker to avoid retry storms within same run
+            print("[voice] Vosk model download failed:", e)
+            return
 
 try:
     ensure_vosk_model()
@@ -72,6 +89,9 @@ try:  # Offline TTS
     _PYTTSX3_AVAILABLE = True
 except Exception:
     _PYTTSX3_AVAILABLE = False
+
+# Allow disabling offline TTS explicitly (Render free tier etc.)
+_DISABLE_OFFLINE_TTS = os.getenv("DISABLE_OFFLINE_TTS", "").lower() in {"1","true","yes"}
 
 
 @dataclass
@@ -181,7 +201,7 @@ def speech_to_text(audio_bytes: bytes) -> Optional[STTResult]:
 
 
 def _init_tts_engine():
-    if not _PYTTSX3_AVAILABLE:
+    if _DISABLE_OFFLINE_TTS or not _PYTTSX3_AVAILABLE:
         return None
     try:
         # Use native NSSpeechSynthesizer on macOS for reliability
@@ -318,5 +338,28 @@ def _browser_fallback(text: str, suppress_msg: bool = False) -> None:
 
 
 def voice_enabled() -> bool:
-    """Helper to check if minimal voice stack is available (record + stt + tts)."""
-    return _AUDIORECORDER_AVAILABLE and (_VOSK_AVAILABLE or _PYTTSX3_AVAILABLE)
+    """Voice considered enabled if we can at least record and provide either STT or any TTS path.
+    Browser-only TTS counts when offline engine disabled."""
+    if not _AUDIORECORDER_AVAILABLE:
+        return False
+    # STT path
+    if _VOSK_AVAILABLE and _load_vosk_model() is not None:
+        return True
+    # Offline TTS engine
+    if _TTS_ENGINE is not None:
+        return True
+    # Browser fallback allowed
+    return True  # recorder + browser speech
+
+
+def voice_stack_report() -> dict:
+    """Return diagnostics about the voice stack for UI display."""
+    return {
+        "audiorecorder": _AUDIORECORDER_AVAILABLE,
+        "vosk_lib": _VOSK_AVAILABLE,
+        "vosk_model_loaded": bool(_load_vosk_model()) if _VOSK_AVAILABLE else False,
+        "pyttsx3_lib": _PYTTSX3_AVAILABLE,
+        "offline_tts_disabled": _DISABLE_OFFLINE_TTS,
+        "tts_engine_ready": _TTS_ENGINE is not None,
+        "browser_tts": True,
+    }
