@@ -140,10 +140,27 @@ def record_audio(label: str = "🎤 Speak", instructions: str = "Click to start 
     audio = audiorecorder(start_prompt=label, stop_prompt="⏹️ Stop")
     if len(audio) == 0:
         return None
-    # Component returns pydub.AudioSegment; export to wav bytes
+    # Component returns pydub.AudioSegment; attempt export
     buf = io.BytesIO()
-    audio.export(buf, format="wav")  # type: ignore
-    return buf.getvalue()
+    try:
+        audio.export(buf, format="wav")  # type: ignore
+        return buf.getvalue()
+    except Exception:
+        # If export fails (likely missing ffmpeg), attempt raw parameters
+        try:
+            raw = audio.raw_data  # type: ignore
+            # Construct a minimal WAV header
+            import wave, struct
+            tmp = io.BytesIO()
+            with wave.open(tmp, 'wb') as wf:
+                wf.setnchannels(audio.channels)  # type: ignore
+                wf.setsampwidth(audio.sample_width)  # type: ignore
+                wf.setframerate(audio.frame_rate)  # type: ignore
+                wf.writeframes(raw)
+            return tmp.getvalue()
+        except Exception:
+            st.error("Audio export failed (missing ffmpeg). Install ffmpeg or disable voice recording.")
+            return None
 
 
 def speech_to_text(audio_bytes: bytes) -> Optional[STTResult]:
