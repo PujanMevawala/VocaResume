@@ -24,6 +24,12 @@ from utils.voice_utils import record_audio, speech_to_text, text_to_speech, voic
 
 from config import settings
 warnings.filterwarnings("ignore")
+# Suppress noisy pydub SyntaxWarnings (regex escape sequences in upstream lib)
+warnings.filterwarnings(
+    "ignore",
+    category=SyntaxWarning,
+    module=r"pydub\.utils"
+)
 
 load_dotenv()
 
@@ -81,19 +87,14 @@ def _render_landing_page():
     # CTA Section (moved above Core Features) – single functional Streamlit button centered
     st.markdown(
         """
-        <div class=\"cta-band\">
-            <div class=\"cta-copy\">
-                <h3>Ready to analyze your resume?</h3>
-                <p>Upload your PDF and paste a target job description to get instant insights.</p>
-            </div>
-        </div>
-        """,
+        <div class=\"cta-band\">\n            <div class=\"cta-copy\">\n                <h3 style='margin-bottom:.35rem;'>Ready to analyze your resume?</h3>\n                <p style='max-width:620px;margin:0 auto 1.1rem;line-height:1.5;'>Upload your PDF and paste a target job description to get instant insights.</p>\n            </div>\n        </div>\n        """,
         unsafe_allow_html=True,
     )
 
-    cta_cols = st.columns([1,1,1])
-    with cta_cols[1]:
-        if st.button("🚀 Start Your Journey", key="landing_start_top", help="Go to main app", use_container_width=True):
+    # Centered button directly under text
+    btn_center_cols = st.columns([3,4,3])
+    with btn_center_cols[1]:
+        if st.button("Start Your Journey", key="landing_start_top", help="Go to main app", use_container_width=True):
             st.session_state["app_view"] = "main"
             st.rerun()
 
@@ -135,21 +136,21 @@ def _render_landing_page():
                 <div class="how-card">
                     <div class="how-object obj-1"></div>
                     <div class="how-content">
-                        <h3><span class="step-badge">1</span>Provide Inputs</h3>
+                        <h3>Provide Inputs</h3>
                         <p>Paste a job description & upload a PDF resume.</p>
                     </div>
                 </div>
                 <div class="how-card">
                     <div class="how-object obj-2"></div>
                     <div class="how-content">
-                        <h3><span class="step-badge">2</span>Select Action</h3>
+                        <h3>Select Action</h3>
                         <p>Choose analysis, suggestions, interview prep, or fit scoring.</p>
                     </div>
                 </div>
                 <div class="how-card">
                     <div class="how-object obj-3"></div>
                     <div class="how-content">
-                        <h3><span class="step-badge">3</span>Get Insights</h3>
+                        <h3>Get Insights</h3>
                         <p>Downloadable & voice-playable AI generated output.</p>
                     </div>
                 </div>
