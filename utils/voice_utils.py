@@ -1,9 +1,10 @@
-"""Voice interaction utilities for VocaResume.
+"""
+Voice interaction utilities for VocaResume.
 
 Provides:
 - record_audio(): Capture microphone audio via streamlit widget.
 - speech_to_text(audio_bytes): Convert raw WAV/PCM bytes to text using Vosk (offline) if available, else fallback.
-- text_to_speech(text): Synthesize speech via pyttsx3 (offline) or fallback to no-op.
+- text_to_speech(text): Synthesize speech via pyttsx3 (offline) or fallback.
 
 Design Goals:
 - Offline-first (Vosk + pyttsx3) to avoid extra API keys.
@@ -11,49 +12,53 @@ Design Goals:
 - Cross-platform: Avoid system-specific dependencies beyond what libraries handle; pyttsx3 uses native drivers.
 
 Notes:
-- Vosk model download: We lazily attempt to load a small model if present under ./models/vosk or environment variable VOSK_MODEL_PATH.
-  If not found, we instruct the user how to download but still fail softly.
-- For recording, we rely on the "streamlit-audiorecorder" component to simplify front-end capture (browser side) and return audio bytes.
+- Vosk model download: Lazily attempts to load a small model if present under ./models/vosk or environment variable VOSK_MODEL_PATH.
+- For recording, relies on "streamlit-audiorecorder" for front-end capture (browser side) and returns audio bytes.
 
 Future Improvements:
 - Add Whisper fallback (OpenAI) if user supplies API key & opts in.
 - Cache multiple TTS voices; add rate/pitch controls.
 """
+
 from __future__ import annotations
 import io
 import os
 import json
 import contextlib
-from dataclasses import dataclass
 import platform
 import shutil
 import subprocess
-from typing import Optional, Tuple
-import streamlit as st
-import os, zipfile, io, requests, threading
+import threading
+import tempfile
+from dataclasses import dataclass
 from textwrap import shorten
 
+import streamlit as st
+import zipfile
+import requests
+
+# Thread lock for Vosk model downloads
 _vosk_dl_lock = threading.Lock()
 
+# ---------------------------
+# Ensure Vosk model exists
+# ---------------------------
 def ensure_vosk_model():
-    """Download a small Vosk model if not already present.
-
-    Env Vars:
-      VOSK_MODEL_PATH : target directory (default ./models/vosk)
-      VOSK_MODEL_URL  : override download URL (zip)
-      VOSK_SKIP_DL    : if set to 1/true, skip download
-    """
-    if os.getenv("VOSK_SKIP_DL", "").lower() in {"1","true","yes"}:
+    """Download a small Vosk model if not already present."""
+    if os.getenv("VOSK_SKIP_DL", "").lower() in {"1", "true", "yes"}:
         return
     target = os.environ.get("VOSK_MODEL_PATH", "./models/vosk")
     marker = os.path.join(target, ".installed")
     if os.path.exists(marker):
         return
     with _vosk_dl_lock:
-        if os.path.exists(marker):  # double-check
+        if os.path.exists(marker):
             return
         os.makedirs(target, exist_ok=True)
-        url = os.environ.get("VOSK_MODEL_URL", "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip")
+        url = os.environ.get(
+            "VOSK_MODEL_URL",
+            "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+        )
         try:
             resp = requests.get(url, timeout=180)
             resp.raise_for_status()
@@ -63,7 +68,6 @@ def ensure_vosk_model():
                 f.write("ok")
             print("[voice] Vosk model installed at", target)
         except Exception as e:
-            # Leave a partial marker to avoid retry storms within same run
             print("[voice] Vosk model download failed:", e)
             return
 
@@ -71,37 +75,69 @@ try:
     ensure_vosk_model()
 except Exception as e:
     print("Vosk model download skipped:", e)
-# Optional imports guarded
-try:  # Audio recording widget
-    from audiorecorder import audiorecorder  # type: ignore
-    _AUDIORECORDER_AVAILABLE = True
-except Exception:
-    _AUDIORECORDER_AVAILABLE = False
 
-try:  # Vosk STT
-    import vosk  # type: ignore
-    _VOSK_AVAILABLE = True
-except Exception:
-    _VOSK_AVAILABLE = False
+# ---------------------------
+# Import optional dependencies
+# ---------------------------
+VOICE_READY = True
+MISSING = []
 
-try:  # Offline TTS
-    import pyttsx3  # type: ignore
-    _PYTTSX3_AVAILABLE = True
-except Exception:
-    _PYTTSX3_AVAILABLE = False
+try:
+    import vosk
+except ImportError:
+    VOICE_READY = False
+    MISSING.append("vosk")
+
+try:
+    import pyttsx3
+except ImportError:
+    VOICE_READY = False
+    MISSING.append("pyttsx3")
+
+try:
+    import pydub
+except ImportError:
+    VOICE_READY = False
+    MISSING.append("pydub")
+
+try:
+    # Primary expected import name
+    from streamlit_audiorecorder import audiorecorder  # type: ignore
+except ImportError:
+    # Some environments expose component simply as 'audiorecorder'
+    try:
+        from audiorecorder import audiorecorder  # type: ignore
+    except ImportError:
+        VOICE_READY = False
+        MISSING.append("streamlit-audiorecorder")
+
+if not VOICE_READY:
+    print(f"❌ Voice dependencies missing: {', '.join(MISSING)}")
+else:
+    print("✅ All voice dependencies loaded successfully")
+
+# ---------------------------
+# Availability flags
+# ---------------------------
+_VOSK_AVAILABLE = "vosk" not in MISSING
+_PYTTSX3_AVAILABLE = "pyttsx3" not in MISSING
+_AUDIORECORDER_AVAILABLE = "streamlit-audiorecorder" not in MISSING
 
 # Allow disabling offline TTS explicitly (Render free tier etc.)
-_DISABLE_OFFLINE_TTS = os.getenv("DISABLE_OFFLINE_TTS", "").lower() in {"1","true","yes"}
+_DISABLE_OFFLINE_TTS = os.getenv("DISABLE_OFFLINE_TTS", "").lower() in {"1", "true", "yes"}
 
-
+# ---------------------------
+# Dataclass for STT result
+# ---------------------------
 @dataclass
 class STTResult:
     text: str
-    confidence: Optional[float] = None
+    confidence: float | None = None
 
-
-_VOSK_MODEL_CACHE = None  # Lazy-loaded model
-
+# ---------------------------
+# Lazy-loaded Vosk model cache
+# ---------------------------
+_VOSK_MODEL_CACHE = None
 
 def _load_vosk_model():
     """Attempt to load (and cache) a Vosk model. Returns model or None."""
@@ -110,7 +146,6 @@ def _load_vosk_model():
         return None
     if _VOSK_MODEL_CACHE is not None:
         return _VOSK_MODEL_CACHE
-    # Determine model path
     candidate_paths = [
         os.getenv("VOSK_MODEL_PATH"),
         os.path.join("models", "vosk"),
@@ -120,19 +155,27 @@ def _load_vosk_model():
         if not p:
             continue
         if os.path.isdir(p):
+            # If directory itself is not a model but contains a single model dir, descend
+            try_paths = [p]
             try:
-                _VOSK_MODEL_CACHE = vosk.Model(p)  # type: ignore[attr-defined]
-                return _VOSK_MODEL_CACHE
+                contents = [d for d in os.listdir(p) if os.path.isdir(os.path.join(p, d)) and d.startswith("vosk-model")]
+                if len(contents) == 1 and not any(fname.endswith('.conf') for fname in os.listdir(p)):
+                    try_paths.insert(0, os.path.join(p, contents[0]))
             except Exception:
-                continue
+                pass
+            for tp in try_paths:
+                try:
+                    _VOSK_MODEL_CACHE = vosk.Model(tp)  # type: ignore[attr-defined]
+                    return _VOSK_MODEL_CACHE
+                except Exception:
+                    continue
     return None
 
-
-def record_audio(label: str = "🎤 Speak", instructions: str = "Click to start / stop recording") -> Optional[bytes]:
-    """Render an audio recorder widget and return WAV bytes once user stops.
-
-    Returns None if component unavailable or user hasn't recorded.
-    """
+# ---------------------------
+# Audio recording
+# ---------------------------
+def record_audio(label: str = "🎤 Speak", instructions: str = "Click to start / stop recording") -> bytes | None:
+    """Render an audio recorder widget and return WAV bytes once user stops."""
     if not _AUDIORECORDER_AVAILABLE:
         st.info("Audio recording component not installed (streamlit-audiorecorder).")
         return None
@@ -140,34 +183,29 @@ def record_audio(label: str = "🎤 Speak", instructions: str = "Click to start 
     audio = audiorecorder(start_prompt=label, stop_prompt="⏹️ Stop")
     if len(audio) == 0:
         return None
-    # Component returns pydub.AudioSegment; attempt export
     buf = io.BytesIO()
     try:
         audio.export(buf, format="wav")  # type: ignore
         return buf.getvalue()
     except Exception:
-        # If export fails (likely missing ffmpeg), attempt raw parameters
         try:
             raw = audio.raw_data  # type: ignore
-            # Construct a minimal WAV header
-            import wave, struct
-            tmp = io.BytesIO()
-            with wave.open(tmp, 'wb') as wf:
+            import wave
+            with wave.open(buf, "wb") as wf:
                 wf.setnchannels(audio.channels)  # type: ignore
                 wf.setsampwidth(audio.sample_width)  # type: ignore
                 wf.setframerate(audio.frame_rate)  # type: ignore
                 wf.writeframes(raw)
-            return tmp.getvalue()
+            return buf.getvalue()
         except Exception:
             st.error("Audio export failed (missing ffmpeg). Install ffmpeg or disable voice recording.")
             return None
 
-
-def speech_to_text(audio_bytes: bytes) -> Optional[STTResult]:
-    """Transcribe audio bytes using Vosk if available. Returns STTResult or None.
-
-    If unavailable, returns None and displays a warning.
-    """
+# ---------------------------
+# Speech-to-text
+# ---------------------------
+def speech_to_text(audio_bytes: bytes) -> STTResult | None:
+    """Transcribe audio bytes using Vosk if available. Returns STTResult or None."""
     if not audio_bytes:
         return None
     if not _VOSK_AVAILABLE:
@@ -176,24 +214,20 @@ def speech_to_text(audio_bytes: bytes) -> Optional[STTResult]:
 
     model = _load_vosk_model()
     if model is None:
-        st.warning("Vosk model not found. Download a small model (e.g., 'vosk-model-small-en-us-0.15') and place it under models/vosk")
+        st.warning("Vosk model not found. Place model under models/vosk")
         return None
 
     try:
         import wave
         wf = wave.open(io.BytesIO(audio_bytes), "rb")
         if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() not in (8000, 16000, 32000, 44100, 48000):
-            # Convert audio using pydub if format unexpected
-            try:
-                from pydub import AudioSegment  # type: ignore
-                seg = AudioSegment.from_file(io.BytesIO(audio_bytes))
-                seg = seg.set_channels(1).set_frame_rate(16000).set_sample_width(2)
-                buf = io.BytesIO()
-                seg.export(buf, format="wav")
-                wf = wave.open(io.BytesIO(buf.getvalue()), "rb")
-            except Exception:
-                st.error("Failed to normalize audio for STT.")
-                return None
+            from pydub import AudioSegment
+            seg = AudioSegment.from_file(io.BytesIO(audio_bytes))
+            seg = seg.set_channels(1).set_frame_rate(16000).set_sample_width(2)
+            buf = io.BytesIO()
+            seg.export(buf, format="wav")
+            wf.close()
+            wf = wave.open(io.BytesIO(buf.getvalue()), "rb")
 
         rec = vosk.KaldiRecognizer(model, wf.getframerate())  # type: ignore[attr-defined]
         transcript_parts = []
@@ -208,6 +242,7 @@ def speech_to_text(audio_bytes: bytes) -> Optional[STTResult]:
         final_res = json.loads(rec.FinalResult())  # type: ignore[attr-defined]
         if final_res.get("text"):
             transcript_parts.append(final_res.get("text"))
+        wf.close()
         full_text = " ".join(transcript_parts).strip()
         if not full_text:
             return None
@@ -216,15 +251,15 @@ def speech_to_text(audio_bytes: bytes) -> Optional[STTResult]:
         st.error(f"Speech recognition failed: {e}")
         return None
 
-
+# ---------------------------
+# Text-to-speech
+# ---------------------------
 def _init_tts_engine():
     if _DISABLE_OFFLINE_TTS or not _PYTTSX3_AVAILABLE:
         return None
     try:
-        # Use native NSSpeechSynthesizer on macOS for reliability
         driver_name = 'nsss' if platform.system().lower() == 'darwin' else None
         engine = pyttsx3.init(driverName=driver_name) if driver_name else pyttsx3.init()
-        # Slightly slower rate for clarity
         rate = engine.getProperty('rate')
         engine.setProperty('rate', min(rate, 185))
         return engine
@@ -233,45 +268,38 @@ def _init_tts_engine():
 
 _TTS_ENGINE = _init_tts_engine()
 
-
-def text_to_speech(text: str) -> Optional[bytes]:
-    """Generate spoken audio for given text. Returns WAV bytes or None.
-
-    If TTS engine not available, returns None and surfaces info message.
-    """
+def text_to_speech(text: str) -> bytes | None:
+    """Generate spoken audio for given text. Returns WAV bytes or None."""
     if not text:
         return None
     if _TTS_ENGINE is None:
-        # Browser SpeechSynthesis API fallback (no audio bytes returned, plays client-side)
         _browser_fallback(text)
         if _PYTTSX3_AVAILABLE:
-            st.warning("Local TTS engine unavailable in this environment; using browser speech instead.")
-        else:
-            st.info("pyttsx3 not installed; using browser speech fallback if supported.")
+            st.warning("Local TTS engine unavailable; using browser speech instead.")
         return None
 
-    # pyttsx3 saves to a file; ensure WAV output and normalize if driver writes AIFF
-    import tempfile
     fname = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
             fname = tmp.name
         _TTS_ENGINE.save_to_file(text, fname)  # type: ignore
         _TTS_ENGINE.runAndWait()
-        # Some platforms may write non-wav; normalize via pydub if needed
+
+        # Normalize audio if needed
         try:
             with open(fname, 'rb') as f:
-                data12 = f.read(12)
-            if not (data12.startswith(b'RIFF') and b'WAVE' in data12):
-                from pydub import AudioSegment  # type: ignore
+                header = f.read(12)
+            if not (header.startswith(b'RIFF') and b'WAVE' in header):
+                from pydub import AudioSegment
                 ffmpeg_path = shutil.which('ffmpeg')
                 if ffmpeg_path:
-                    AudioSegment.converter = ffmpeg_path  # type: ignore[attr-defined]
+                    AudioSegment.converter = ffmpeg_path
                 seg = AudioSegment.from_file(fname)
                 seg = seg.set_channels(1).set_frame_rate(22050)
                 seg.export(fname, format='wav')
         except Exception:
             pass
+
         with open(fname, 'rb') as f:
             data = f.read()
         if data and len(data) > 512:
@@ -283,55 +311,12 @@ def text_to_speech(text: str) -> Optional[bytes]:
         if fname and os.path.exists(fname):
             with contextlib.suppress(Exception):
                 os.remove(fname)
-
-    # Fallback: macOS 'say' to AIFF then convert to WAV
-    try:
-        if platform.system().lower() == 'darwin' and shutil.which('say'):
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.aiff') as aiff_tmp:
-                aiff_path = aiff_tmp.name
-            subprocess.run(['say', '-o', aiff_path, text], check=True)
-            wav_path = aiff_path.replace('.aiff', '.wav')
-            converted = False
-            try:
-                from pydub import AudioSegment  # type: ignore
-                ffmpeg_path = shutil.which('ffmpeg')
-                if ffmpeg_path:
-                    AudioSegment.converter = ffmpeg_path  # type: ignore[attr-defined]
-                seg = AudioSegment.from_file(aiff_path)
-                seg = seg.set_channels(1).set_frame_rate(22050)
-                seg.export(wav_path, format='wav')
-                converted = True
-            except Exception:
-                if shutil.which('afconvert'):
-                    try:
-                        subprocess.run(['afconvert', '-f', 'WAVE', '-d', 'LEI16@22050', aiff_path, wav_path], check=True)
-                        converted = True
-                    except Exception:
-                        converted = False
-            if converted and os.path.exists(wav_path):
-                with open(wav_path, 'rb') as f:
-                    data = f.read()
-                with contextlib.suppress(Exception):
-                    os.remove(aiff_path)
-                    os.remove(wav_path)
-                if data and len(data) > 512:
-                    return data
-            with open(aiff_path, 'rb') as f:
-                data = f.read()
-            with contextlib.suppress(Exception):
-                os.remove(aiff_path)
-            return data if data and len(data) > 512 else None
-    except Exception as e:
-        st.error(f"macOS TTS fallback failed: {e}")
-        return None
-
+    return None
 
 def _browser_fallback(text: str, suppress_msg: bool = False) -> None:
-    """Inject a small snippet that uses the browser's SpeechSynthesis if available.
-    No return (client plays speech). Safe no-op if components disabled.
-    """
+    """Use browser SpeechSynthesis API for TTS playback."""
     try:
-        safe = shorten(text, width=800, placeholder="…")  # avoid gigantic injection
+        safe = shorten(text, width=800, placeholder="…")
         st.components.v1.html(
             f"""
             <script>
@@ -353,24 +338,21 @@ def _browser_fallback(text: str, suppress_msg: bool = False) -> None:
         if not suppress_msg:
             st.info("Speech playback unavailable.")
 
-
+# ---------------------------
+# Voice utilities
+# ---------------------------
 def voice_enabled() -> bool:
-    """Voice considered enabled if we can at least record and provide either STT or any TTS path.
-    Browser-only TTS counts when offline engine disabled."""
+    """Check if voice stack is functional."""
     if not _AUDIORECORDER_AVAILABLE:
         return False
-    # STT path
     if _VOSK_AVAILABLE and _load_vosk_model() is not None:
         return True
-    # Offline TTS engine
     if _TTS_ENGINE is not None:
         return True
-    # Browser fallback allowed
-    return True  # recorder + browser speech
-
+    return True  # Browser fallback allowed
 
 def voice_stack_report() -> dict:
-    """Return diagnostics about the voice stack for UI display."""
+    """Return diagnostics about the voice stack."""
     return {
         "audiorecorder": _AUDIORECORDER_AVAILABLE,
         "vosk_lib": _VOSK_AVAILABLE,
