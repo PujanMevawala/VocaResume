@@ -4,7 +4,6 @@ services:
     env: docker
     plan: free
     dockerfilePath: ./Dockerfile
-    # If your app runs on a different port, set it here
     envVars:
       - key: PORT
         value: 8501

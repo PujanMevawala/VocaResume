@@ -7,6 +7,9 @@ Refactor 2025-09-04:
 from dotenv import load_dotenv
 import base64
 import streamlit as st
+from streamlit_extras.colored_header import colored_header
+from streamlit_extras.card import card
+from streamlit_extras.let_it_rain import rain
 from groq import Groq
 import google.generativeai as genai
 from utils.style_utils import load_css
@@ -20,7 +23,15 @@ from services.model_service import get_model_response
 from utils.file_utils import input_pdf_setup
 from agents.agent_factory import create_agents
 from tasks.task_factory import create_tasks, get_task_from_query
-from utils.voice_utils import record_audio, speech_to_text, text_to_speech, voice_enabled, voice_stack_report
+from utils.voice_utils import (
+    record_audio,
+    speech_to_text,
+    text_to_speech,
+    voice_enabled,
+    optimize_query,
+    route_query,
+    generate_audio,
+)
 
 from config import settings
 warnings.filterwarnings("ignore")
@@ -39,7 +50,7 @@ os.environ["LITELLM_DEBUG"] = "false"
 
 st.set_page_config(
     page_title="VocaResume",
-    page_icon="�",
+    page_icon="🎤",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -350,10 +361,7 @@ if voice_mode and voice_enabled():
 elif voice_mode and not voice_enabled():
     st.info("Voice dependencies missing (vosk/pyttsx3/audiorecorder/pydub).")
 
-# Diagnostics expander when Voice Debug enabled
-if os.getenv("VOICE_DEBUG", "").lower() in {"1","true","yes"}:
-    with st.expander("Voice Diagnostics"):
-        st.json(voice_stack_report())
+# (Diagnostics removed per redesign)
 
 progress_bar = st.progress(0, text="Idle")
 
@@ -362,6 +370,8 @@ if 'responses' not in st.session_state:
     st.session_state['responses'] = {}
 if 'voice_played' not in st.session_state:
     st.session_state['voice_played'] = {}
+if 'audio_cache' not in st.session_state:
+    st.session_state['audio_cache'] = {}
 
 from utils.text_utils import clean_markdown
 
@@ -403,21 +413,83 @@ def run_task(task_index: int, cache_key: tuple[str,str]):
             return r
     return cache_and_return(cache_key, _compute)
 
-# If we have a voice query, auto route and execute
-if voice_query_result and pdf_content and tasks:
-    idx, intent = get_task_from_query(voice_query_result)
-    routed_response = run_task(idx, (intent, model_choice))
-    if routed_response:
-        st.success(f"Voice command executed: {intent.replace('_',' ').title()}")
-        st.markdown(f"### Voice Result ({intent.title()})")
-        st.markdown(f'<div class="ui-card"><div style="white-space: pre-line; line-height: 1.6;">{clean_markdown(routed_response)}</div></div>', unsafe_allow_html=True)
-        resp_hash = hashlib.md5(routed_response.encode('utf-8')).hexdigest()
-        vp_key = (intent, model_choice, resp_hash)
-        if voice_mode and vp_key not in st.session_state['voice_played']:
-            audio_out = text_to_speech(routed_response[:1200])
-            if audio_out:
-                st.audio(audio_out, format='audio/wav')
-                st.session_state['voice_played'][vp_key] = True
+general_freeform_key = None
+freeform_response = None
+
+# Voice assistant enhanced flow
+if voice_query_result:
+    with st.container():
+        st.markdown("<div class='divider-fw'></div>", unsafe_allow_html=True)
+        st.subheader("Voice Assistant")
+        col_v1, col_v2 = st.columns(2)
+        with col_v1:
+            st.markdown("**Raw Transcription**")
+            st.info(voice_query_result)
+        # Attempt LLM-based refinement
+        optimized = optimize_query(voice_query_result)
+        llm_json = None
+        try:
+            from services.model_service import refine_voice_query
+            resume_excerpt = pdf_content[0]['data'][:1200] if pdf_content else ""
+            llm_raw = refine_voice_query(voice_query_result, input_text or "", resume_excerpt, model_info, groq_client, pplx_client)
+            import json as _json
+            llm_json = _json.loads(llm_raw)
+            optimized = llm_json.get('optimized_query') or optimized
+            probable_intent = llm_json.get('probable_intent', 'freeform')
+        except Exception:
+            probable_intent = 'freeform'
+        with col_v2:
+            st.markdown("**Optimized Query**")
+            st.success(optimized)
+            if llm_json and llm_json.get('rationale'):
+                st.caption(llm_json['rationale'])
+        # Determine route: prefer LLM probable_intent if present
+        if 'probable_intent' in locals() and probable_intent in {'analysis','interview','suggestions','job_fit'}:
+            mapping = {"analysis":0,"interview":1,"suggestions":2,"job_fit":3}
+            task_idx = mapping.get(probable_intent)
+            intent_label = probable_intent
+        else:
+            task_idx, intent_label = route_query(optimized)
+        if pdf_content and tasks and task_idx is not None:
+            st.caption(f"Routed to task: {intent_label.replace('_',' ').title()}")
+            routed_response = run_task(task_idx, (intent_label, model_choice))
+            if routed_response:
+                st.markdown(f"### Response ({intent_label.title()})")
+                st.markdown(f'<div class="ui-card"><div style="white-space: pre-line; line-height:1.6;">{clean_markdown(routed_response)}</div></div>', unsafe_allow_html=True)
+                # Audio (MP3)
+                audio_segments = generate_audio(routed_response[:3000])
+                if audio_segments:
+                    for seg in audio_segments:
+                        st.audio(seg['mp3'], format='audio/mp3')
+                else:
+                    # fallback wav short preview
+                    audio_out = text_to_speech(routed_response[:800])
+                    if audio_out:
+                        st.audio(audio_out, format='audio/wav')
+        else:
+            # Freeform route (general query over context)
+            if pdf_content:
+                from services.model_service import general_query_response
+                prior = [v for k,v in st.session_state['responses'].items() if isinstance(k, tuple)]
+                general_freeform_key = ("freeform", model_choice, hashlib.md5(optimized.encode('utf-8')).hexdigest())
+                if general_freeform_key in st.session_state['responses']:
+                    freeform_response = st.session_state['responses'][general_freeform_key]
+                else:
+                    with st.spinner("Generating contextual answer..."):
+                        freeform_response = general_query_response(optimized, pdf_content, input_text or "", prior, model_info, groq_client, pplx_client, max_output_tokens=max_tokens)
+                        st.session_state['responses'][general_freeform_key] = freeform_response
+                st.markdown("### Contextual Answer")
+                st.markdown(f'<div class="ui-card"><div style="white-space: pre-line; line-height:1.6;">{clean_markdown(freeform_response)}</div></div>', unsafe_allow_html=True)
+                segs = generate_audio(freeform_response[:3200])
+                if segs:
+                    for seg in segs:
+                        st.audio(seg['mp3'], format='audio/mp3')
+                else:
+                    fallback = text_to_speech(freeform_response[:800])
+                    if fallback:
+                        st.audio(fallback, format='audio/wav')
+            else:
+                st.warning("Upload a resume and provide job description for contextual answers.")
 
 main_sections = [
         {

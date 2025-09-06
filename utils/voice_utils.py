@@ -32,6 +32,8 @@ import threading
 import tempfile
 from dataclasses import dataclass
 from textwrap import shorten
+import re
+import hashlib
 
 import streamlit as st
 import zipfile
@@ -362,3 +364,115 @@ def voice_stack_report() -> dict:
         "tts_engine_ready": _TTS_ENGINE is not None,
         "browser_tts": True,
     }
+
+# ---------------------------
+# Query Optimization & Intent Routing
+# ---------------------------
+_FILLER_PATTERN = re.compile(r"\b(um+|uh+|like|you know|actually|basically|literally|hmm+)\b", re.IGNORECASE)
+
+def optimize_query(text: str) -> str:
+    """Lightweight normalization & filler removal to create cleaner query for LLM routing.
+    - remove filler words
+    - collapse whitespace
+    - ensure first letter capitalized
+    """
+    if not text:
+        return ""
+    t = _FILLER_PATTERN.sub("", text)
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return text.strip()
+    return t[0].upper() + t[1:]
+
+_INTENT_KEYWORDS = {
+    "analysis": ["analyze", "analysis", "review", "breakdown"],
+    "interview": ["interview", "question", "questions", "prep"],
+    "suggestions": ["improve", "improvement", "optimize", "suggest", "suggestions"],
+    "job_fit": ["fit", "score", "match", "matching"],
+}
+
+def route_query(query: str) -> tuple[int | None, str]:
+    """Return (task_index or None, intent_label).
+    If no strong match -> (None, 'freeform').
+    """
+    if not query:
+        return 0, "analysis"
+    q = query.lower()
+    scores = {}
+    for intent, kws in _INTENT_KEYWORDS.items():
+        score = sum(1 for k in kws if re.search(rf"\b{re.escape(k)}\b", q))
+        if score:
+            scores[intent] = score
+    if not scores:
+        return None, "freeform"
+    # pick highest score; tie-breaker stable by insertion order
+    intent = max(scores.items(), key=lambda x: x[1])[0]
+    mapping = {"analysis":0, "interview":1, "suggestions":2, "job_fit":3}
+    return mapping.get(intent, 0), intent
+
+# ---------------------------
+# Audio Generation (MP3)
+# ---------------------------
+_AUDIO_CACHE: dict[str, bytes] = {}
+
+def _tts_to_wav(text: str) -> bytes | None:
+    """Internal: get WAV bytes using existing text_to_speech path (returns wav or None)."""
+    return text_to_speech(text)
+
+def _wav_to_mp3(wav_bytes: bytes) -> bytes | None:
+    if not wav_bytes:
+        return None
+    try:
+        from pydub import AudioSegment  # type: ignore
+        seg = AudioSegment.from_file(io.BytesIO(wav_bytes), format="wav")
+        # light normalization
+        seg = seg.set_frame_rate(22050).set_channels(1)
+        buf = io.BytesIO()
+        seg.export(buf, format="mp3", bitrate="64k")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+def generate_audio(text: str, friendly: bool = True, segment: bool = True, max_segment_chars: int = 900) -> list[dict]:
+    """Generate MP3 audio segments for response.
+    Returns list of dicts: [{ 'mp3': bytes, 'text': segment_text, 'index': i }]
+    Caches by hash of segment text.
+    If conversion to mp3 fails, returns empty list (UI can fallback to browser TTS).
+    """
+    if not text:
+        return []
+    # Friendly tone: inject minor pauses (basic heuristic) before splitting.
+    friendly_text = text
+    if friendly:
+        friendly_text = re.sub(r"(\n+)", " \1", friendly_text)
+        # ensure sentences have slight pause markers (non audible but grouping for segmentation)
+    # segmentation
+    parts: list[str] = []
+    if segment and len(friendly_text) > max_segment_chars:
+        current = []
+        chars = 0
+        for sent in re.split(r"(?<=[.!?])\s+", friendly_text):
+            if chars + len(sent) > max_segment_chars and current:
+                parts.append(" ".join(current).strip())
+                current = [sent]
+                chars = len(sent)
+            else:
+                current.append(sent)
+                chars += len(sent)
+        if current:
+            parts.append(" ".join(current).strip())
+    else:
+        parts = [friendly_text.strip()]
+    outputs = []
+    for i, p in enumerate(parts):
+        h = hashlib.md5(p.encode("utf-8")).hexdigest()
+        if h in _AUDIO_CACHE:
+            outputs.append({"mp3": _AUDIO_CACHE[h], "text": p, "index": i})
+            continue
+        wav_bytes = _tts_to_wav(p)
+        mp3_bytes = _wav_to_mp3(wav_bytes) if wav_bytes else None
+        if mp3_bytes:
+            _AUDIO_CACHE[h] = mp3_bytes
+            outputs.append({"mp3": mp3_bytes, "text": p, "index": i})
+    return outputs
+
