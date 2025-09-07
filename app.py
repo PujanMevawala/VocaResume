@@ -1,11 +1,6 @@
 import warnings
 import logging
-"""VocaResume Streamlit App
-
-Refactor 2025-09-04:
-- Introduced landing page (session key 'app_view').
-- Subsequent UI adjustments will remove decorative emojis per new design brief.
-"""
+"""VocaResume Streamlit App."""
 from dotenv import load_dotenv
 import base64
 import streamlit as st
