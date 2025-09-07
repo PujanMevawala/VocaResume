@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: vocaresume
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    envVars:
+      - key: PORT
+        value: 8501
+      # Disable offline TTS on minimal images lacking system voices/ffmpeg.
+      - key: DISABLE_OFFLINE_TTS
+        value: "1"
+      - key: VOICE_DEBUG
+        value: "0"
+      # Skip automatic Vosk model download to reduce cold start; mount persistent disk or enable later.
+      - key: VOSK_SKIP_DL
+        value: "1"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: PPLX_API_KEY
+        sync: false
+    healthCheckPath: /
+    autoDeploy: true
+
+# For full voice stack (ffmpeg + espeak), supply a Dockerfile and change 'env: python' to 'runtime: docker' (or create a second service).
