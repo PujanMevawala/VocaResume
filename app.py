@@ -8,7 +8,7 @@ automatic TTS playback of generated summaries.
 from __future__ import annotations
 
 # Standard libs
-import os, re, hashlib
+import os, re, hashlib, base64
 
 import streamlit as st
 
@@ -44,7 +44,8 @@ except Exception:
         settings = _FallbackSettings()  # type: ignore
 from services.model_service import get_model_response
 from services.voice_script_service import generate_voice_script
-from tasks.task_factory import create_tasks, get_task_from_query
+from tasks.task_factory import create_tasks
+from tasks.vector_router import init_router
 from agents.agent_factory import create_agents
 from utils.voice_utils import text_to_speech, voice_enabled, voice_stack_report
 from utils.file_utils import input_pdf_setup
@@ -58,24 +59,118 @@ def _init_session_state():
     st.session_state.setdefault('voice_played', {})
 
 
+def _resolve_logo():
+    for name in ["vocaresume_logo.png","logo.png","VocaResume.png"]:
+        p = os.path.join("static", name)
+        if os.path.exists(p):
+            return p
+    return None
+
+@st.cache_data(show_spinner=False)
+def _logo_data_uri() -> str | None:
+    path = _resolve_logo()
+    if not path: return None
+    try:
+        with open(path, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode('utf-8')
+        ext = 'png' if path.lower().endswith('.png') else 'jpg'
+        return f"data:image/{ext};base64,{b64}"
+    except Exception:
+        return None
+
+
 def _render_landing_page():
+    logo = _logo_data_uri()
     st.markdown(
         """
-        <div class='landing-container'>
-            <div class='landing-hero'>
-                <h1>VocaResume</h1>
-                <p class='subtitle'>Modern career insights with streamlined voice-ready narration.</p>
+<style>
+/* --- Landing Page Modern Styles --- */
+body, .stApp {background:radial-gradient(circle at 20% 20%, #f2f9ff 0%, #ffffff 55%, #f3fbfd 100%) !important;}
+.landing-shell{max-width:1180px;margin:0 auto;padding:3.2rem 2.2rem 4rem;}
+.hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:1.2rem;position:relative;}
+.hero h1{font-size:3.2rem;background:linear-gradient(90deg,#0b7285,#1098ad);-webkit-background-clip:text;color:transparent;margin:0;font-weight:700;letter-spacing:.5px;}
+.hero-tag{font-size:1.15rem;max-width:780px;line-height:1.45;color:#335360;margin:0 auto;font-weight:400;}
+.hero-badges{display:flex;gap:.75rem;flex-wrap:wrap;justify-content:center;margin-top:.5rem;}
+.badge{background:#e3f8fb;color:#0b7285;padding:.45rem .85rem;font-size:.7rem;font-weight:600;letter-spacing:.75px;border-radius:40px;text-transform:uppercase;border:1px solid #cff4f9;}
+.cta-primary{background:#0b7285;color:#fff;border:none;padding:.95rem 1.6rem;font-size:1rem;font-weight:600;border-radius:14px;cursor:pointer;box-shadow:0 4px 18px -4px rgba(11,114,133,.45);transition:.25s ease;display:inline-flex;align-items:center;gap:.55rem;}
+.cta-primary:hover{background:#095d6b;transform:translateY(-2px);box-shadow:0 8px 24px -6px rgba(11,114,133,.55);} 
+.logo-landing{width:86px;height:86px;object-fit:contain;filter:drop-shadow(0 8px 22px rgba(11,114,133,.35));animation:floatLogo 6s ease-in-out infinite;} 
+@keyframes floatLogo{0%,100%{transform:translateY(0);}50%{transform:translateY(-10px);}}
+
+/* Feature Cards */
+.features-grid{margin-top:3.5rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1.35rem;}
+.f-card{position:relative;background:linear-gradient(145deg,#ffffff, #f0fbfd);border:1px solid #d8eef2;border-radius:20px;padding:1.15rem 1.15rem 1.35rem;box-shadow:0 6px 18px -4px rgba(15,109,126,.08);overflow:hidden;min-height:180px;display:flex;flex-direction:column;gap:.55rem;}
+.f-card:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 85% 10%,rgba(16,152,173,.18),transparent 60%);opacity:.9;pointer-events:none;}
+.f-card h3{margin:0;font-size:.95rem;letter-spacing:.5px;font-weight:600;color:#0b7285;display:flex;align-items:center;gap:.4rem;}
+.f-card p{margin:0;font-size:.78rem;line-height:1.35;color:#3d5661;font-weight:400;}
+.f-icon{width:34px;height:34px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:.9rem;background:#0b7285;color:#fff;box-shadow:0 4px 10px -3px rgba(11,114,133,.5);}
+
+
+/* Steps */
+.steps{margin-top:4rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1rem;}
+.step{background:#ffffff;border:1px solid #d9eef1;border-radius:18px;padding:1rem .95rem;display:flex;flex-direction:column;gap:.4rem;position:relative;box-shadow:0 4px 14px -4px rgba(15,109,126,.08);} 
+.step-num{width:34px;height:34px;border-radius:12px;background:#0b7285;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:.8rem;box-shadow:0 4px 12px -4px rgba(11,114,133,.5);} 
+.step h4{margin:.2rem 0 0;font-size:.8rem;letter-spacing:.6px;text-transform:uppercase;color:#0b7285;} 
+.step p{margin:0;font-size:.7rem;line-height:1.3;color:#35505a;}
+
+.footer-landing{margin-top:4.5rem;text-align:center;font-size:.7rem;letter-spacing:.5px;color:#51737d;opacity:.75;}
+@media (max-width:760px){.hero h1{font-size:2.35rem;}.features-grid{grid-template-columns:1fr 1fr;}.c-quote{font-size:.95rem;}}
+</style>
+""",
+        unsafe_allow_html=True
+    )
+
+    st.markdown("<div class='landing-shell'>", unsafe_allow_html=True)
+    # Hero Section
+    st.markdown(
+        f"""
+        <div class='hero'>
+            {f'<img src="{logo}" class="logo-landing" alt="Logo" />' if logo else ''}
+            <div class='hero-badges'>
+                <span class='badge'>AI DRIVEN</span>
+                <span class='badge'>VOICE READY</span>
+                <span class='badge'>VECTOR ROUTED</span>
             </div>
-            <div style='margin-top:2rem;text-align:center;'>
-                <a href='?view=main' style='text-decoration:none;'>
-                    <button style='padding:.75rem 1.5rem;border:none;background:#0b7285;color:#fff;border-radius:8px;font-size:1rem;cursor:pointer;'>Enter App</button>
-                </a>
-            </div>
+            <h1>VocaResume</h1>
+            <p class='hero-tag'>Accelerate your job search with intelligent resume analysis, interview prep, optimization tips and instant spoken summaries – all in one streamlined workspace.</p>
+            <button class='cta-primary' onclick="window.location.href='?view=main'">Launch App →</button>
         </div>
         """,
         unsafe_allow_html=True
     )
-    if st.button("Enter Application", key="enter_app_btn"):
+
+    # Feature Cards
+    st.markdown("<div class='features-grid'>", unsafe_allow_html=True)
+    features = [
+        ("Semantic Task Routing","Understands your intent (analysis, interview, suggestions, fit scoring) with a resilient vector engine."),
+        ("Doc Intelligence","High-fidelity text extraction for sharper insights – no more blank PDFs."),
+        ("Adaptive Voice","Conversational script planning + natural TTS for instant audio briefings."),
+        ("Optimization Insights","Actionable rewrite suggestions & improvement deltas to level up your resume."),
+        ("Interview Generation","Adaptive technical & behavioral questions generated from your experience."),
+        ("Fit Scoring","Multi-factor role–candidate alignment scoring with rationale.")
+    ]
+    for title, desc in features:
+        st.markdown(f"<div class='f-card'><div class='f-icon'>★</div><h3>{title}</h3><p>{desc}</p></div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+    # Steps Section
+    st.markdown("<div class='steps'>", unsafe_allow_html=True)
+    steps = [
+        ("Upload","Drop in your resume PDF."),
+        ("Describe","Paste role or job description."),
+        ("Ask","Query: analyze, optimize, interview, fit."),
+        ("Listen","Get spoken summary instantly."),
+    ]
+    for i,(t,d) in enumerate(steps, start=1):
+        st.markdown(f"<div class='step'><div class='step-num'>{i}</div><h4>{t}</h4><p>{d}</p></div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div class='footer-landing'>VocaResume · Built for modern career navigation · © 2025</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Streamlit button fallback (keyboard access) hidden visually but present for a11y
+    if st.button("Launch App", key="enter_app_btn", help="Open main interface"):
         st.session_state['app_view'] = 'main'
         st.rerun()
 
@@ -115,69 +210,64 @@ else:
 
 ######## Redesigned Single-Page Layout ########
 
-# Sticky Glass Header (logo)
-brand_svg = """
-<svg viewBox='0 0 64 64' width='64' height='64' role='img' aria-label='App Logo'>
-  <defs>
-    <linearGradient id='brandGrad' x1='0' y1='0' x2='1' y2='1'>
-      <stop offset='0%' stop-color='#0088a9'/>
-      <stop offset='100%' stop-color='#e67e22'/>
-    </linearGradient>
-  </defs>
-  <circle cx='32' cy='32' r='28' fill='url(#brandGrad)' opacity='0.15'></circle>
-  <circle cx='32' cy='32' r='20' fill='none' stroke='url(#brandGrad)' stroke-width='6' stroke-linecap='round' class='brand-ring'></circle>
-  <circle cx='32' cy='32' r='6' fill='url(#brandGrad)'></circle>
-</svg>
-"""
-st.markdown("<div class='ta-header' id='top'>", unsafe_allow_html=True)
-header_cols = st.columns([0.9, 6])
-with header_cols[0]:
-    st.markdown(f"<div class='brand-anim-logo'>{brand_svg}</div>", unsafe_allow_html=True)
-with header_cols[1]:
-    st.markdown("<div class='brand-wrap'><span class='brand-title'>VocaResume</span><div class='brand-sub'>Voice-Powered Career Copilot</div></div>", unsafe_allow_html=True)
-st.markdown("</div>", unsafe_allow_html=True)
-
-# Control Panel (structured)
-st.markdown("<div class='control-panel'>", unsafe_allow_html=True)
-cp_cols_top = st.columns([2.6, 1, 1])
-with cp_cols_top[0]:
-    model_choice = st.selectbox("Model", list(settings.AVAILABLE_MODELS.keys()), index=0, key="model_select")
-    model_info = settings.AVAILABLE_MODELS[model_choice]
-    provider = model_info.get('provider')
-    model = model_info.get('model')
-    st.caption(f"Provider: {provider.title() if provider else 'None'} | Model: {model if model else 'None'}")
-    if not provider or not model:
-        st.error(f"Model config error: provider or model is missing (provider={provider}, model={model})")
-    elif provider not in settings.AVAILABLE_MODELS[model_choice]['provider']:
-        st.warning(f"Provider '{provider}' not recognized. Check AVAILABLE_MODELS in config.")
-with cp_cols_top[1]:
-    voice_mode = st.toggle("Voice", value=False, help="Enable speech input & spoken responses.")
-    st.markdown(f"<div class='voice-anim {'on' if voice_mode else 'off'}'><span></span><span></span><span></span></div>", unsafe_allow_html=True)
-with cp_cols_top[2]:
-    if st.button("Clear Cache", type="secondary"):
-        if 'responses' in st.session_state:
-            st.session_state['responses'].clear()
-            st.toast("Cache Cleared!")
-
-max_tokens = st.slider("Max Tokens", 512, 8192, 4096, 256, key="max_tokens_slider")
-st.markdown("</div>", unsafe_allow_html=True)
-st.markdown("<div class='divider-fw'></div>", unsafe_allow_html=True)
+# Sticky Glass Header (logo) for main app
+logo_data_uri = _logo_data_uri()
+if not logo_data_uri:
+    st.warning("Logo image missing (checked vocaresume_logo.png, logo.png, VocaResume.png)")
 
 st.markdown("""
 <style>
-/* Modern minimalist layout - widened */
-.layout-grid {display:grid;grid-template-columns:500px 1fr;gap:2.25rem;align-items:start;margin-top:1.25rem;max-width:1900px;margin-left:auto;margin-right:auto;}
-@media (max-width:1400px){.layout-grid{grid-template-columns:460px 1fr;}}
-@media (max-width:1250px){.layout-grid{grid-template-columns:420px 1fr;}}
+.main-header{margin:1rem auto 1.25rem;max-width:980px;text-align:center;position:relative;padding-top:.4rem;}
+.main-header .logo{width:70px;height:70px;object-fit:contain;border-radius:22px;background:#e0f7fb;padding:6px;box-shadow:0 6px 20px -6px rgba(11,114,133,.4);} 
+.main-header h1{margin:.8rem 0 0;font-size:2.1rem;font-weight:700;letter-spacing:.5px;background:linear-gradient(90deg,#0b7285,#1098ad);-webkit-background-clip:text;color:transparent;}
+.main-header .tag{margin:.2rem 0 0;font-size:.7rem;letter-spacing:1.5px;font-weight:600;color:#147f91;opacity:.85;}
+.control-row{max-width:1100px;margin:0 auto 1rem;display:grid;grid-template-columns:280px 120px 1fr 90px;gap:1rem;align-items:end;}
+.ctrl-label{font-size:.6rem;letter-spacing:1.1px;text-transform:uppercase;font-weight:600;color:#0b7285;opacity:.7;margin-bottom:.25rem;}
+.token-slider .stSlider{padding-top:0 !important;}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown(f"""
+<div class='main-header'>
+  <img src='{logo_data_uri or ''}' class='logo' alt='logo'/>
+  <h1>VocaResume</h1>
+  <div class='tag'>CAREER COPILOT</div>
+</div>
+""", unsafe_allow_html=True)
+
+col_model, col_voice, col_tokens, col_cache = st.columns([1.8,0.9,2.4,0.8])
+with col_model:
+    st.markdown("<div class='ctrl-label'>Model</div>", unsafe_allow_html=True)
+    model_choice = st.selectbox("Model", list(settings.AVAILABLE_MODELS.keys()), index=0, key="model_select")
+    model_info = settings.AVAILABLE_MODELS[model_choice]; provider = model_info.get('provider'); model = model_info.get('model')
+with col_voice:
+    st.markdown("<div class='ctrl-label'>Voice</div>", unsafe_allow_html=True)
+    voice_mode = st.toggle(" ", value=False, help="Enable spoken responses")
+with col_tokens:
+    st.markdown("<div class='ctrl-label'>Max Tokens</div>", unsafe_allow_html=True)
+    max_tokens = st.slider("Tokens", 512, 8192, 4096, 256, key="max_tokens_slider")
+with col_cache:
+    st.markdown("<div class='ctrl-label'>Cache</div>", unsafe_allow_html=True)
+    if st.button("Clear", key="clear_cache_btn"):
+        st.session_state.get('responses', {}).clear()
+        st.toast("Cache Cleared")
+
+if not provider or not model:
+    st.error(f"Model config error: provider or model missing (provider={provider}, model={model})")
+
+st.markdown("""
+<style>
+/* Modern minimalist layout */
+.layout-grid {display:grid;grid-template-columns:420px 1fr;gap:1.75rem;align-items:start;margin-top:1.25rem;}
 @media (max-width:1150px){.layout-grid{grid-template-columns:1fr;}}
-.panel {background:rgba(255,255,255,0.60);backdrop-filter:blur(18px);border:1px solid rgba(0,0,0,.06);border-radius:22px;padding:1.15rem 1.35rem 1.35rem;box-shadow:0 6px 22px -6px rgba(0,0,0,.08);} 
-.panel h3 {margin:0 0 .85rem;font-size:1.08rem;font-weight:600;letter-spacing:.5px;display:flex;align-items:center;gap:.5rem;}
+.panel {background:rgba(255,255,255,0.55);backdrop-filter:blur(14px);border:1px solid rgba(0,0,0,.08);border-radius:18px;padding:1.15rem 1.25rem;box-shadow:0 4px 14px -4px rgba(0,0,0,.07);} 
+.panel h3 {margin:0 0 .75rem;font-size:1.05rem;font-weight:600;letter-spacing:.5px;display:flex;align-items:center;gap:.5rem;}
 .panel small{opacity:.75;}
 .btn-primary {background:#0b7285;color:#fff;border:none;padding:.65rem 1.1rem;border-radius:10px;font-weight:500;font-size:.9rem;cursor:pointer;display:inline-flex;align-items:center;gap:.5rem;}
-.status-tag {display:inline-block;padding:.3rem .65rem;border-radius:999px;font-size:.60rem;letter-spacing:.65px;text-transform:uppercase;background:#0b7285;color:#fff;margin-left:.5rem;}
-.output-block {background:#0d1117;color:#d0d4da;font-family:var(--font-mono, ui-monospace, Menlo, monospace);padding:1.1rem 1.15rem;border-radius:18px;font-size:.8rem;line-height:1.5;position:relative;border:1px solid #1d2630;}
-.output-block h4{margin:.25rem 0 .65rem;font-size:.75rem;text-transform:uppercase;letter-spacing:.85px;font-weight:600;color:#6ec9dc;}
-.pill {display:inline-flex;align-items:center;font-size:.62rem;padding:.25rem .65rem;border-radius:18px;letter-spacing:.65px;background:#eef8f9;color:#0b7285;margin:0 .4rem .4rem 0;font-weight:600;}
+.status-tag {display:inline-block;padding:.25rem .55rem;border-radius:999px;font-size:.65rem;letter-spacing:.5px;text-transform:uppercase;background:#0b7285;color:#fff;margin-left:.5rem;}
+.output-block {background:#0d1117;color:#d0d4da;font-family:var(--font-mono, ui-monospace, Menlo, monospace);padding:1rem;border-radius:14px;font-size:.8rem;line-height:1.45;position:relative;}
+.output-block h4{margin:.25rem 0 .75rem;font-size:.8rem;text-transform:uppercase;letter-spacing:.75px;font-weight:600;color:#91d1e0;}
+.pill {display:inline-flex;align-items:center;font-size:.65rem;padding:.2rem .55rem;border-radius:16px;letter-spacing:.5px;background:#eef8f9;color:#0b7285;margin-right:.4rem;font-weight:500;}
 .audio-bar {position:sticky;bottom:0;left:0;width:100%;background:linear-gradient(180deg,rgba(255,255,255,.15),rgba(255,255,255,.55));backdrop-filter:blur(14px);border-top:1px solid rgba(0,0,0,.08);padding:.6rem 1rem;margin-top:2rem;border-radius:14px;}
 button[disabled]{opacity:.55 !important;cursor:not-allowed !important;}
 </style>
@@ -194,23 +284,51 @@ with col_wrap:
     uploaded_file = st.file_uploader("Resume (PDF)", type=["pdf"], help="Optional – improves relevance.")
     user_query = st.text_input("Your Query", key="user_query", placeholder="Ask e.g. 'Give me interview questions' or 'What's my fit score?' or just 'Analyze resume'")
     user_name = st.text_input("Name (personalize voice)", key="user_name", placeholder="Optional")
-    auto_task = None
-    detected_task_label = None
+    if 'vector_router' not in st.session_state:
+        try:
+            st.session_state['vector_router'] = init_router(persist_dir=".chroma_store")
+        except Exception as e:
+            st.warning(f"Vector router unavailable: {e}")
     if st.button("Generate", type="primary", use_container_width=True, disabled=not (input_text and uploaded_file and user_query)):
-        st.session_state['last_run'] = {
-            'input_text': input_text,
-            'user_query': user_query
-        }
-        # classify task
-        t_idx, intent = get_task_from_query(user_query)
-        detected_task_label = intent
-        auto_task = t_idx
-        st.session_state['detected_task'] = {'index': t_idx, 'intent': intent}
+        st.session_state['last_run'] = {'input_text': input_text, 'user_query': user_query}
+        # Use vector router to decide task
+        vr = st.session_state.get('vector_router')
+        if vr:
+            try:
+                # ingest sources (idempotent upserts)
+                st.session_state.setdefault('ingested_once', False)
+                if not st.session_state['ingested_once'] and uploaded_file:
+                    # resume ingested later after parsing for text; store flag
+                    st.session_state['pending_ingest_resume'] = True
+                vr.ingest_job_description(input_text)
+                route_res = vr.route(user_query)
+                st.session_state['detected_task'] = {'index': route_res.task_index, 'intent': route_res.label, 'score': route_res.score, 'alt': route_res.alt}
+            except Exception as e:
+                st.error(f"Routing failed: {e}")
+        else:
+            st.session_state['detected_task'] = {'index': 0, 'intent': 'analysis', 'score': 0.0, 'alt': []}
     st.markdown("</div>", unsafe_allow_html=True)
 
     # RIGHT PANEL: Outputs
     st.markdown("<div class='panel' id='right-panel'>", unsafe_allow_html=True)
-    st.markdown("<h3>Output <span class='status-tag'>RESULT</span></h3>", unsafe_allow_html=True)
+    # Determine routing backend badge
+    backend_badge = ""
+    vr = st.session_state.get('vector_router')
+    stats_html = ''
+    if vr:
+        backend = getattr(vr, '_routing_backend', 'chroma')
+        badge_color = '#0b7285' if backend == 'chroma' else '#ff8800'
+        backend_badge = f"<span class='status-tag' style='background:{badge_color};'>{backend.upper()}</span>"
+        try:
+            stats = vr.stats()  # type: ignore[attr-defined]
+            if stats:
+                # show top 2 counts compact
+                items = sorted(stats.items(), key=lambda x: x[1], reverse=True)
+                top = ', '.join([f"{k}:{v}" for k,v in items[:2]])
+                stats_html = f"<span style='margin-left:.5rem;font-size:.55rem;letter-spacing:.5px;opacity:.55;'>[{top}]</span>"
+        except Exception:
+            pass
+    st.markdown(f"<h3>Output <span class='status-tag'>RESULT</span>{backend_badge}{stats_html}</h3>", unsafe_allow_html=True)
     # If run executed, perform pipeline
     if 'detected_task' in st.session_state and st.session_state.get('last_run'):
         if not uploaded_file:
@@ -228,6 +346,17 @@ with col_wrap:
             # Load resume
             try:
                 pdf_content = input_pdf_setup(uploaded_file)
+                # ingest resume text into vector router once
+                if pdf_content and st.session_state.get('pending_ingest_resume'):
+                    vr = st.session_state.get('vector_router')
+                    if vr:
+                        try:
+                            resume_text = pdf_content[0]['data']
+                            vr.ingest_resume(resume_text)
+                            st.session_state['ingested_once'] = True
+                            st.session_state['pending_ingest_resume'] = False
+                        except Exception as e:
+                            st.warning(f"Resume ingest failed: {e}")
             except Exception as e:
                 st.error(f"Resume parse failed: {e}")
                 pdf_content = None
@@ -240,26 +369,44 @@ with col_wrap:
                 from services.script_planner import plan_script
                 script_plan = plan_script(cleaned, settings.GOOGLE_API_KEY)
                 if script_plan.get('status') != 'success':
-                    st.error(f"Script planning failed: {script_plan.get('message')}")
+                    # Graceful fallback: derive a concise spoken script from cleaned text
+                    fallback_script = cleaned.split('\n')[:8]
+                    fallback_script = ' '.join([re.sub(r'\s+',' ', ln).strip() for ln in fallback_script])[:800]
+                    st.warning("Script planner degraded – using fallback summarization for voice.")
+                    st.session_state['last_pipeline'] = {
+                        'task': intent,
+                        'raw': raw_md,
+                        'cleaned': cleaned,
+                        'plan': '',
+                        'script': fallback_script or cleaned[:600]
+                    }
                 else:
                     st.session_state['last_pipeline'] = {
                         'task': intent,
                         'raw': raw_md,
                         'cleaned': cleaned,
-                        'plan': script_plan.get('plan',''),
+                        'plan': script_plan.get('plan',''),  # retained for debug only
                         'script': script_plan.get('script','')
                     }
     pipe = st.session_state.get('last_pipeline')
     if pipe:
-        st.markdown(f"<div class='pill'>Task: {pipe['task']}</div>", unsafe_allow_html=True)
-        with st.expander("Result", expanded=True):
-            st.markdown(f"<div class='output-block'><h4>PRIMARY OUTPUT</h4>{clean_markdown(pipe['raw'])}</div>", unsafe_allow_html=True)
-        # Script output intentionally hidden from UI to reduce clutter per user request
+        vr = st.session_state.get('vector_router')
+        backend = getattr(vr, '_routing_backend', 'chroma') if vr else 'keyword'
+        # Show routing score and alt candidates if available
+        det = st.session_state.get('detected_task', {})
+        score = det.get('score')
+        alt = det.get('alt', []) or []
+        alt_str = ' '.join([f"{a['label']}({a['score']:.2f})" for a in alt[:3]]) if alt else ''
+        score_html = f"<span style='margin-left:.4rem;opacity:.65;'>score {score:.2f}</span>" if score is not None else ''
+        alt_html = f"<div style='font-size:.6rem;opacity:.6;margin-top:.2rem;'>Alt: {alt_str}</div>" if alt_str else ''
+        st.markdown(f"<div class='pill'>Task: {pipe['task']} · Route: {backend}{score_html}</div>{alt_html}", unsafe_allow_html=True)
+        # Only show final analysis result (raw LLM output)
+        st.markdown(f"<div class='output-block'><h4>RESULT</h4>{clean_markdown(pipe['raw'])}</div>", unsafe_allow_html=True)
         if voice_mode and pipe.get('script'):
-            audio_bytes = text_to_speech(pipe['script'][:1800])  # still use improved script internally
+            audio_bytes = text_to_speech(pipe['script'][:1800])
             if audio_bytes:
                 st.audio(audio_bytes, format='audio/mpeg')
-                st.download_button("Download Narration", data=audio_bytes, file_name="vocaresume_narration.mp3", mime="audio/mpeg", use_container_width=True)
+                st.download_button("Download Audio", data=audio_bytes, file_name="spoken.mp3", mime="audio/mpeg", use_container_width=True)
     else:
         st.info("Enter inputs and click Generate to see results.")
     st.markdown("</div>", unsafe_allow_html=True)

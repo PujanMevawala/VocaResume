@@ -19,6 +19,7 @@ import asyncio
 import tempfile
 import logging
 import uuid
+import time
 from pathlib import Path
 import streamlit as st
 import os, zipfile, io, requests, threading
@@ -169,10 +170,17 @@ def text_to_speech(text: str, format: str = "mp3") -> Optional[bytes]:
             loop.close()
         if path and path.exists():
             data = path.read_bytes()
-            # optionally clean up older files to avoid disk bloat
+            # configurable cleanup window (seconds) default 3600
+            try:
+                cleanup_secs = int(os.getenv("TTS_CLEAN_SECONDS", "3600"))
+            except ValueError:
+                cleanup_secs = 3600
+            now = time.time()
             try:
                 for f in path.parent.glob('*.mp3'):
-                    if f != path and f.stat().st_mtime < path.stat().st_mtime - 3600:
+                    if f == path:
+                        continue
+                    if now - f.stat().st_mtime > cleanup_secs:
                         f.unlink(missing_ok=True)
             except Exception:
                 pass

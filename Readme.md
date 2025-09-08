@@ -6,16 +6,22 @@ Modern, voice-enabled career copilot for resume intelligence: analyze strengths 
 
 ## ✨ Features
 
-| Area               | Highlights                                                                                                  |
-| ------------------ | ----------------------------------------------------------------------------------------------------------- |
-| Resume Analysis    | Structured strengths & weaknesses grounded in JD context                                                    |
-| Suggestions        | Actionable ATS + clarity improvements                                                                       |
-| Interview Prep     | 5 technical, resume-grounded Q&A items                                                                      |
-| Job Fit Score      | Numeric score + qualitative rationale + gauge viz                                                           |
-| Multi‑Provider LLM | Gemini (Pro / Flash), Groq LLaMA variants, Perplexity Sonar                                                 |
-| Voice Mode         | Record (browser) → STT (Vosk or Whisper API) → intent route → TTS (EdgeTTS → fallback gTTS/pyttsx3/browser) |
-| Robust UI          | Landing page + single-page workflow, accessible components                                                  |
-| Caching            | Per (section, model) response memory for speed                                                              |
+| Area               | Highlights                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------ |
+| Resume Analysis    | Structured strengths & weaknesses grounded in JD context                                               |
+| Suggestions        | Actionable ATS + clarity improvements                                                                  |
+| Interview Prep     | 5 technical, resume-grounded Q&A items                                                                 |
+| Job Fit Score      | Numeric score + qualitative rationale + gauge viz                                                      |
+| Multi‑Provider LLM | Gemini (Pro / Flash), Groq LLaMA variants, Perplexity Sonar                                            |
+| Voice Mode         | Vector‑routed task → Conversational script (Gemini 2.5 Pro) → TTS (EdgeTTS → gTTS → pyttsx3 → browser) |
+| Vector Routing     | Chroma similarity decides task (analysis/interview/suggestions/job_fit) instead of regex               |
+| Docling Parsing    | Robust PDF → text extraction (fallback PyPDF) with empty/corrupt safeguards                            |
+| Robust UI          | Landing page + single-page workflow, accessible components                                             |
+| Routing Stats      | Live route counts + backend badge (CHROMA / KEYWORD fallback)                                          |
+| Resilient Fallback | Keyword routing & hash embeddings if Chroma/embeddings unavailable                                     |
+| Script Failover    | Auto concise spoken script fallback if planner fails                                                   |
+| TTS Cleanup        | Auto stale MP3 purge via `TTS_CLEAN_SECONDS` env var                                                   |
+| Caching            | Per (section, model) response memory for speed                                                         |
 
 ## 🗂 Current Structure (Post-Cleanup)
 
@@ -56,6 +62,7 @@ WHISPER_MODEL=whisper-1
 DISABLE_OFFLINE_TTS=1        # Skip pyttsx3; use gTTS/browser
 VOSK_SKIP_DL=1               # Faster cold start (no auto download)
 VOICE_DEBUG=0                # Set 1 for diagnostics pane
+TTS_CLEAN_SECONDS=3600       # Purge older synthesized mp3 files (default 3600)
 ```
 
 Voice mode gracefully degrades: no Vosk → STT disabled, TTS still available.
@@ -89,19 +96,30 @@ pytest -q
 
 Tests include: Streamlit load smoke test + settings/env structure validation.
 
-## 🔊 Voice / STT / TTS Flow (Updated)
+## 🔊 Updated Voice Flow (No Raw Script Display)
 
-1. Record via `streamlit-audiorecorder` (browser mic)
-2. STT provider selection (`stt_providers.py`): Whisper API (planned) → local Vosk (if installed)
-3. Intent routing (voice query → task)
-4. LLM response generation (selected provider/model)
-5. Markdown is split into two forms:
-   - `display_md`: rich markdown for on‑screen display
-   - `tts_text`: sanitized plain text produced by `normalize_for_tts()` (no `#`, `*`, code fences)
-6. TTS cascade: EdgeTTS (neural voices, MP3 @ 22.05 kHz) → gTTS → pyttsx3 (legacy) → browser speech synthesis
-7. Audio file stored atomically and offered for playback + download; session history retains recent entries.
+1. User provides job description, uploads resume PDF, enters free-form query.
+2. PDF parsed to clean text via Docling (fallback PyPDF). Empty or corrupt files are rejected with a friendly error.
+3. Chroma vector router ingests (once): resume text, job description, canonical task labels. Query embedding routes to the best task.
+4. Task-specific prompt executed by selected base LLM (Gemini / Groq / Perplexity) → analytical markdown output.
+5. Markdown cleaned (`preprocess_for_script`) and passed to Gemini 2.5 Pro script planner → short conversational spoken script (< ~160 words).
+6. Script converted to audio via Edge TTS (fallback: gTTS → pyttsx3 → browser speech synthesis). Only analysis + audio player are shown (script text hidden).
+7. Optional download of generated MP3.
 
-All steps are fail-soft—failures log + degrade without crashing the UI.
+Fail-soft design: Any stage failure yields a targeted message while preserving base analysis.
+
+### Vector Task Routing Details
+
+Collection entries:
+
+- Task labels (analysis / interview / suggestions / job_fit) with descriptive blurbs
+- Resume text (single large doc)
+- Job description text
+- Historical queries (incremental adaptation)
+
+At inference the query embedding retrieves nearest task labels; top match sets task index. Alt candidates (with scores) kept in session for future UI surfacing.
+
+Environment override: set `EMBED_MODEL` to swap SentenceTransformer model (default `all-MiniLM-L6-v2`).
 
 ### Markdown Sanitization
 

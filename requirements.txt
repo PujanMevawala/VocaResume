@@ -1,23 +1,24 @@
 streamlit==1.38.0  # pinned for static asset stability on Render
-pdf2image
+# pdf2image
 Pillow
 python-dotenv
 groq
 google-generativeai
-streamlit-option-menu
+# streamlit-option-menu
 plotly
 # poppler-utils is a system package; keeping line for reference but not installable via pip.
 # Remove or handle externally in deployment. pdf2image may require it; on Render consider disabling preview features.
-poppler-utils
+# poppler-utils
 crewai
-opencv-python-headless
+# opencv-python-headless
 openai>=1.40.0
 streamlit-extras
 pytest
+pytest-asyncio
 requests
-vosk
+# vosk
 pyttsx3
-streamlit-audiorecorder
+# streamlit-audiorecorder
 pydub
 gTTS 
 watchdog
@@ -27,3 +28,7 @@ langchain-google-genai
 edge-tts  # New primary TTS provider (Azure Edge voices)
 mistune
 beautifulsoup4
+chromadb>=0.5.5
+sentence-transformers>=3.0.1
+docling>=0.2.0
+pypdf>=4.2.0

@@ -45,7 +45,8 @@ def _truncate(s: str, max_chars: int) -> str:
 
 def _convert_html_to_text(soup: 'BeautifulSoup') -> str:
     lines: list[str] = []
-    for el in soup.recursiveChildGenerator():  # type: ignore[attr-defined]
+    # Use descendants (recursiveChildGenerator deprecated in bs4 >=4)
+    for el in soup.descendants:  # type: ignore[attr-defined]
         name = getattr(el, 'name', None)
         if name is None:
             # NavigableString
