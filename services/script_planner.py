@@ -5,6 +5,7 @@ for TTS distinct from the raw text.
 """
 from __future__ import annotations
 import difflib
+import re
 from typing import Dict
 import google.generativeai as genai
 
@@ -46,6 +47,20 @@ def plan_script(clean_text: str, api_key: str | None) -> Dict[str,str]:
     ratio = difflib.SequenceMatcher(None, clean_text.lower(), script.lower()).ratio()
     if ratio > 0.92:  # too similar -> force rephrase minimal tweak
         script = "Here is a concise spoken summary: " + script[:350]
+
+    # sanitize leading 'plan' artifacts in script (e.g., 'plan:', 'Plan -', 'PLAN ->')
+    script = _sanitize_script(script)
+
     return {"status":"success","plan":plan, "script":script}
+
+
+def _sanitize_script(text: str) -> str:
+    if not text:
+        return text
+    cleaned = text.lstrip()
+    cleaned = re.sub(r"^(?:plan\s*[-:>]*\s*)+", "", cleaned, flags=re.IGNORECASE)
+    # remove accidental leading labels like 'script:'
+    cleaned = re.sub(r"^(?:script\s*[-:>]*\s*)+", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.lstrip("#* \t")
 
 __all__ = ["plan_script"]

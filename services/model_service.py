@@ -14,11 +14,14 @@ def _handle_google(input_text: str, pdf_mime: str, pdf_data: str, prompt: str, g
     last_error = None
     for attempt in range(2):
         try:
-            response = model.generate_content([
-                input_text,
-                {"mime_type": pdf_mime, "data": pdf_data},
-                prompt
-            ], generation_config=genai.types.GenerationConfig(
+            parts = [input_text]
+            # If plain text, append directly; else treat as binary artifact
+            if pdf_mime == "text/plain":
+                parts.append(f"Resume Content:\n{pdf_data[:15000]}")
+            else:
+                parts.append({"mime_type": pdf_mime, "data": pdf_data})
+            parts.append(prompt)
+            response = model.generate_content(parts, generation_config=genai.types.GenerationConfig(
                 max_output_tokens=max_output_tokens,
                 temperature=0.4  # Slightly increased for more nuanced responses
             ))
@@ -29,11 +32,13 @@ def _handle_google(input_text: str, pdf_mime: str, pdf_data: str, prompt: str, g
     # fallback
     try:
         fallback_model = genai.GenerativeModel("gemini-1.5-flash")
-        response = fallback_model.generate_content([
-            input_text,
-            {"mime_type": pdf_mime, "data": pdf_data},
-            prompt
-        ], generation_config=genai.types.GenerationConfig(
+        parts_fb = [input_text]
+        if pdf_mime == "text/plain":
+            parts_fb.append(f"Resume Content:\n{pdf_data[:15000]}")
+        else:
+            parts_fb.append({"mime_type": pdf_mime, "data": pdf_data})
+        parts_fb.append(prompt)
+        response = fallback_model.generate_content(parts_fb, generation_config=genai.types.GenerationConfig(
             max_output_tokens=max_output_tokens,
             temperature=0.4  # Consistent temperature for fallback
         ))

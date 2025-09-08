@@ -29,8 +29,6 @@ body, .stApp {
     font-family: var(--font-main);
     color: var(--text-color);
     scroll-behavior: smooth;
-    max-width: 2000px; /* widen overall */
-    margin: 0 auto;
 }
 
 h1, h2, h3 {
@@ -38,7 +36,7 @@ h1, h2, h3 {
     font-weight: 700;
     color: var(--heading-color);
 }
-.block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1900px; }
+.block-container { padding-top: 1rem; padding-bottom: 2.5rem; max-width: 1600px !important; }
 
 /* --- Animations --- */
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -180,6 +178,16 @@ h1, h2, h3 {
 .brand-anim-logo svg{display:block}
 .brand-anim-logo .brand-ring{animation:brandPulse 3s ease-in-out infinite; transform-origin:center}
 @keyframes brandPulse{0%,100%{stroke-dasharray:0 160;opacity:.85}50%{stroke-dasharray:60 100;opacity:1}}
+
+/* New image logo wrapper */
+.brand-logo-wrap{position:relative;width:72px;height:72px;display:flex;align-items:center;justify-content:center}
+.brand-img-logo{width:72px;height:72px;object-fit:contain;border-radius:50%;filter:drop-shadow(0 4px 10px rgba(0,136,169,.35));animation:popIn .7s ease-out}
+.brand-logo-wrap:before{content:"";position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.35),rgba(255,255,255,0));pointer-events:none}
+.brand-logo-wrap:after{content:"";position:absolute;inset:-6px;border-radius:50%;background:conic-gradient(from 0deg, #0088a9, #e67e22, #0088a9);opacity:.35;filter:blur(6px);animation:logoRotate 6s linear infinite}
+.logo-glow{position:absolute;inset:0;border-radius:50%;box-shadow:0 0 0 0 rgba(0,136,169,.55);animation:logoPulse 4s ease-in-out infinite;}
+@keyframes logoRotate{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+@keyframes logoPulse{0%,100%{box-shadow:0 0 0 0 rgba(0,136,169,.45)}50%{box-shadow:0 0 0 14px rgba(0,136,169,0)}}
+@keyframes popIn{0%{transform:scale(.6);opacity:0}100%{transform:scale(1);opacity:1}}
 
 /* Control panel under header */
 .control-panel{

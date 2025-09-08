@@ -235,25 +235,63 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-col_model, col_voice, col_tokens, col_cache = st.columns([1.8,0.9,2.4,0.8])
-with col_model:
-    st.markdown("<div class='ctrl-label'>Model</div>", unsafe_allow_html=True)
-    model_choice = st.selectbox("Model", list(settings.AVAILABLE_MODELS.keys()), index=0, key="model_select")
-    model_info = settings.AVAILABLE_MODELS[model_choice]; provider = model_info.get('provider'); model = model_info.get('model')
-with col_voice:
-    st.markdown("<div class='ctrl-label'>Voice</div>", unsafe_allow_html=True)
-    voice_mode = st.toggle(" ", value=False, help="Enable spoken responses")
-with col_tokens:
-    st.markdown("<div class='ctrl-label'>Max Tokens</div>", unsafe_allow_html=True)
-    max_tokens = st.slider("Tokens", 512, 8192, 4096, 256, key="max_tokens_slider")
-with col_cache:
-    st.markdown("<div class='ctrl-label'>Cache</div>", unsafe_allow_html=True)
-    if st.button("Clear", key="clear_cache_btn"):
-        st.session_state.get('responses', {}).clear()
-        st.toast("Cache Cleared")
+# --- Control Bar (restructured) ---
+st.markdown(
+    """
+    <style>
+    .control-bar-wrapper{max-width:1080px;margin:0 auto 1.4rem;padding:.85rem 1rem;border:1px solid #d9ecef;background:linear-gradient(145deg,#ffffff,#f3fbfd);border-radius:20px;box-shadow:0 4px 14px -6px rgba(11,114,133,.15);}
+    .control-grid{display:grid;grid-template-columns: minmax(240px,310px) 110px minmax(320px,1fr) 90px;gap:1rem;align-items:end;}
+    @media (max-width:980px){.control-grid{grid-template-columns:1fr 1fr;}}
+    .ctrl-block{display:flex;flex-direction:column;gap:.35rem;}
+    .ctrl-title{font-size:.58rem;letter-spacing:1px;font-weight:600;text-transform:uppercase;color:#0b7285;opacity:.78;}
+    .voice-toggle-holder{display:flex;align-items:center;justify-content:flex-start;gap:.5rem;padding:.35rem .55rem;border:1px solid #cfe7ec;background:#eef9fb;border-radius:14px;}
+    .voice-toggle-holder span{font-size:.6rem;letter-spacing:.8px;font-weight:600;color:#0b7285;}
+    /* Hide internal toggle label */
+    div[data-testid="stVerticalBlock"] .voice-toggle-holder label{display:none !important;}
+    .token-slider-holder{padding:.4rem .65rem .2rem;border:1px solid #d3e9ed;background:#f6fcfd;border-radius:14px;}
+    .token-value{font-size:.55rem;letter-spacing:.5px;color:#0b7285;font-weight:600;display:inline-block;margin-left:.4rem;}
+    .cache-btn-holder{text-align:right;}
+    .cache-btn-holder button{width:100%;background:#ffecec;color:#c92a2a;border:1px solid #ffc9c9;}
+    .cache-btn-holder button:hover{background:#ffc9c9;color:#801b1b;}
+    .section-divider{max-width:1080px;margin:0.2rem auto 0.8rem;border:none;height:1px;background:linear-gradient(90deg,rgba(11,114,133,.15),rgba(11,114,133,.4),rgba(11,114,133,.1));}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-if not provider or not model:
-    st.error(f"Model config error: provider or model missing (provider={provider}, model={model})")
+with st.container():
+    st.markdown("<div class='control-bar-wrapper'><div class='control-grid'>", unsafe_allow_html=True)
+    # Model selector
+    colA, colB, colC, colD = st.columns([1,1,1,1])
+    with colA:
+        st.markdown("<div class='ctrl-block'><div class='ctrl-title'>Model</div>", unsafe_allow_html=True)
+        model_choice = st.selectbox("Model", list(settings.AVAILABLE_MODELS.keys()), index=0, key="model_select", label_visibility="collapsed")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with colB:
+        st.markdown("<div class='ctrl-block'><div class='ctrl-title'>Voice</div>", unsafe_allow_html=True)
+        # Voice toggle w/out textual label; accessible label in help
+        voice_mode = st.toggle("", value=False, key="voice_toggle", help="Toggle spoken responses on/off", label_visibility="collapsed")
+        # Surround toggle with styled holder (inject minimal script to move element?) simpler: just caption indicator
+        st.caption("On" if voice_mode else "Off")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with colC:
+        st.markdown("<div class='ctrl-block'><div class='ctrl-title'>Max Tokens <span class='token-value'>"+str(st.session_state.get('max_tokens_slider',4096))+"</span></div>", unsafe_allow_html=True)
+        max_tokens = st.slider("Tokens", 512, 8192, 4096, 256, key="max_tokens_slider", label_visibility="collapsed")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with colD:
+        st.markdown("<div class='ctrl-block'><div class='ctrl-title'>Cache</div>", unsafe_allow_html=True)
+        if st.button("Clear", key="clear_cache_btn"):
+            st.session_state.get('responses', {}).clear()
+            st.toast("Cache Cleared")
+        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+st.markdown("<hr class='section-divider' />", unsafe_allow_html=True)
+
+# Expose model configuration selected in control bar (robust to partial reruns)
+model_info = settings.AVAILABLE_MODELS.get(model_choice, {}) if 'model_choice' in locals() else {}
+if not model_info or not model_info.get('provider') or not model_info.get('model'):
+    st.error("Model config error: provider or model missing in AVAILABLE_MODELS entry.")
 
 st.markdown("""
 <style>
