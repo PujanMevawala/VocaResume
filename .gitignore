@@ -25,3 +25,20 @@ node_modules/
 *.zip
 *.tar.gz
 *.orig
+# Vector DB & runtime caches
+.chroma_store/
+chroma.sqlite*
+cache/
+tmp/
+tts_temp/
+*.mp3
+
+# Local notebooks / experiments
+notebooks/
+
+# OS / editor noise (additional)
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/

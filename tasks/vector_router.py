@@ -60,6 +60,11 @@ class RouteResult:
 
 class VectorRouter:
 	def __init__(self, persist_dir: str | None = None):
+		# Pre-initialize tracking attributes so early returns still leave object consistent
+		self._fallback_keyword = False
+		self._routing_backend = "keyword"
+		self._warned_fallback = False
+		self._route_counts: Dict[str,int] = {lbl:0 for _,lbl,_ in TASK_LABELS}
 		if not _CHROMA_AVAILABLE:
 			raise RuntimeError("Chroma not installed; ensure requirements updated.")
 		# Use PersistentClient for durability (avoids 'no such table: collections')
@@ -160,10 +165,7 @@ class VectorRouter:
 				raise RuntimeError(f"Failed to get/create collection: {e}")
 
 		self._fallback_keyword = False
-		# Track backend mode for UI/debug ("chroma" | "keyword")
 		self._routing_backend = "chroma" if self.client and getattr(self, 'collection', None) else "keyword"
-		self._warned_fallback = False
-		self._route_counts: Dict[str,int] = {lbl:0 for _,lbl,_ in TASK_LABELS}
 
 	def _upsert(self, docs: List[str], metadatas: List[Dict[str, Any]], ids: List[str]):
 		"""Safe upsert with fallback switching.
@@ -235,19 +237,22 @@ class VectorRouter:
 			self._fallback_keyword = True
 			self._routing_backend = "keyword"
 			return self.route(query, k)
-
-	def routing_backend(self) -> str:
-		"""Return active backend mode (chroma|keyword)."""
-		return getattr(self, '_routing_backend', 'keyword')
+		# Process vector results
 		ids = results.get('ids', [[]])[0]
 		metas = results.get('metadatas', [[]])[0]
-		dists = results.get('distances', [[]])[0] or results.get('embeddings', [])  # distances may vary depending on version
+		# distances may vary; some versions return distances or embeddings
+		dists = results.get('distances', [[]])[0] or results.get('embeddings', [])
 		candidates: List[Dict[str, Any]] = []
 		for i, m, d in zip(ids, metas, dists):
-			if not m: continue
+			if not m:
+				continue
 			if m.get('doc_type') == 'task_label':
 				score = 1 - d if isinstance(d, (int, float)) else 0.0
-				candidates.append({"task_index": m.get('task_index', 0), "label": m.get('label', 'analysis'), "score": score})
+				candidates.append({
+					"task_index": m.get('task_index', 0),
+					"label": m.get('label', 'analysis'),
+					"score": score
+				})
 		if not candidates:
 			self._route_counts['analysis'] += 1
 			return RouteResult(0, "analysis", 0.0, [])
@@ -257,6 +262,10 @@ class VectorRouter:
 		self.add_query_history(query)
 		self._route_counts[top['label']] = self._route_counts.get(top['label'],0) + 1
 		return RouteResult(top['task_index'], top['label'], top['score'], alt)
+
+	def routing_backend(self) -> str:
+		"""Return active backend mode (chroma|keyword)."""
+		return getattr(self, '_routing_backend', 'keyword')
 
 	def stats(self) -> Dict[str,int]:
 		"""Return cumulative route counts by label."""
