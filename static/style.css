@@ -29,6 +29,8 @@ body, .stApp {
     font-family: var(--font-main);
     color: var(--text-color);
     scroll-behavior: smooth;
+    max-width: 2000px; /* widen overall */
+    margin: 0 auto;
 }
 
 h1, h2, h3 {
@@ -36,7 +38,7 @@ h1, h2, h3 {
     font-weight: 700;
     color: var(--heading-color);
 }
-.block-container { padding-top: 1rem; padding-bottom: 2rem; }
+.block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1900px; }
 
 /* --- Animations --- */
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }

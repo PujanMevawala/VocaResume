@@ -1,6 +1,6 @@
 # This module will contain all business logic for model API calls and response handling.
 
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any, Callable, Union
 import google.generativeai as genai
 
 # Provider dispatcher registry
@@ -81,20 +81,27 @@ _PROVIDER_DISPATCH = {
 
 # Model API clients will be initialized in app.py and passed here if needed
 
-def get_model_response(input_text: str, pdf_content: List[Dict[str, Any]], prompt: str, model_info: Dict[str, str], groq_client=None, pplx_client=None, max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS) -> str:
+from utils.text_utils import normalize_for_tts
+
+
+def get_model_response(input_text: str, pdf_content: List[Dict[str, Any]], prompt: str, model_info: Dict[str, str], groq_client=None, pplx_client=None, max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS) -> Dict[str, str]:
     if not pdf_content:
-        return "Error: No resume content provided."
+        return {"display_md": "Error: No resume content provided.", "tts_text": "Error: No resume content provided."}
     pdf_data = pdf_content[0]["data"]
     pdf_mime = pdf_content[0]["mime_type"]
     provider = model_info.get("provider")
     model_name = model_info.get("model")
     if not provider or not model_name:
-        return f"Error: Model config missing provider or model (provider={provider}, model={model_name})"
+        err = f"Error: Model config missing provider or model (provider={provider}, model={model_name})"
+        return {"display_md": err, "tts_text": err}
     handler = _PROVIDER_DISPATCH.get(provider)
     if not handler:
-        return f"Error: Unknown model provider '{provider}'"
+        err = f"Error: Unknown model provider '{provider}'"
+        return {"display_md": err, "tts_text": err}
     # Debug print for provider/model
     print(f"[DEBUG] get_model_response: provider={provider}, model={model_name}")
-    return handler(input_text, pdf_mime, pdf_data, prompt, groq_client, pplx_client, model_name, max_output_tokens)
+    raw_md = handler(input_text, pdf_mime, pdf_data, prompt, groq_client, pplx_client, model_name, max_output_tokens)
+    sanitized = normalize_for_tts(raw_md)
+    return {"display_md": raw_md, "tts_text": sanitized}
 
 ## Removed benchmark_models: no longer used in streamlined UI

@@ -1,6 +1,14 @@
 # CrewAI task creation logic
 from crewai import Task
 import re
+from typing import Optional
+
+_VECTOR_ROUTER = None  # lazy global
+
+def configure_vector_router(router):
+    """Inject a vector router (set externally)."""
+    global _VECTOR_ROUTER
+    _VECTOR_ROUTER = router
 
 def create_tasks(agents):
     """Create task objects using an existing list of agents.
@@ -33,27 +41,32 @@ def create_tasks(agents):
 
 
 def get_task_from_query(query: str):
-    """Route a natural language voice/text query to the appropriate task index.
+    """Route a natural language query to a task index.
 
-    Mapping rules (order matters):
-      - contains 'resume' or 'improve' -> Suggestions task (index 2)
-      - contains 'fit' or 'score' -> Job Fit task (index 3)
-      - contains 'interview' or 'questions' -> Interview Prep task (index 1)
-      - fallback -> Resume Analysis task (index 0)
-
+    Modes:
+      - If a vector router is configured, use semantic similarity against task prototypes.
+      - Else, fallback keyword mapping.
     Returns: (task_index, intent_label)
     """
     if not query:
         return 0, "analysis"
+
+    if _VECTOR_ROUTER is not None:
+        try:
+            match = _VECTOR_ROUTER.route(query)
+            if match:
+                return match['index'], match['label']
+        except Exception:
+            pass  # silent fallback
+
+    # Fallback keyword logic
     q = query.lower()
-    # Use simple word boundary regex to reduce false positives (e.g., 'benefit' shouldn't trigger 'fit')
     def has(word):
         return re.search(rf"\b{re.escape(word)}\b", q) is not None
-
-    if any(has(w) for w in ["resume", "improve"]):
-        return 2, "suggestions"
-    if any(has(w) for w in ["fit", "score"]):
-        return 3, "job_fit"
-    if any(has(w) for w in ["interview", "questions"]):
+    if any(has(w) for w in ["interview", "question", "questions", "technical"]):
         return 1, "interview"
+    if any(has(w) for w in ["resume", "improve", "optimiz", "enhance"]):
+        return 2, "suggestions"
+    if any(has(w) for w in ["fit", "score", "match", "suitability"]):
+        return 3, "job_fit"
     return 0, "analysis"

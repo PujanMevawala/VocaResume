@@ -1,179 +1,57 @@
-"""Voice interaction utilities for VocaResume.
+"""Simplified TTS utilities for VocaResume.
 
-Provides:
-- record_audio(): Capture microphone audio via streamlit widget.
-- speech_to_text(audio_bytes): Convert raw WAV/PCM bytes to text using Vosk (offline) if available, else fallback.
-- text_to_speech(text): Synthesize speech via pyttsx3 (offline) or fallback to no-op.
+This module now ONLY provides Text-To-Speech functionality using Edge TTS as the
+primary provider with graceful fallbacks (gTTS -> pyttsx3 -> browser speech).
 
-Design Goals:
-- Offline-first (Vosk + pyttsx3) to avoid extra API keys.
-- Graceful degradation: Functions never raise hard exceptions to the UI layer; instead return None or log warnings.
-- Cross-platform: Avoid system-specific dependencies beyond what libraries handle; pyttsx3 uses native drivers.
-
-Notes:
-- Vosk model download: We lazily attempt to load a small model if present under ./models/vosk or environment variable VOSK_MODEL_PATH.
-  If not found, we instruct the user how to download but still fail softly.
-- For recording, we rely on the "streamlit-audiorecorder" component to simplify front-end capture (browser side) and return audio bytes.
-
-Future Improvements:
-- Add Whisper fallback (OpenAI) if user supplies API key & opts in.
-- Cache multiple TTS voices; add rate/pitch controls.
+Removed legacy Speech-To-Text and recording code; the application now relies on
+pure text input.
 """
 from __future__ import annotations
 import io
 import os
 import json
 import contextlib
-from dataclasses import dataclass
 import platform
 import shutil
 import subprocess
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
+import asyncio
+import tempfile
+import logging
+import uuid
+from pathlib import Path
 import streamlit as st
 import os, zipfile, io, requests, threading
 from textwrap import shorten
-from .stt_providers import select_stt_provider, STTOutput
+from .text_utils import normalize_for_tts
 
-_vosk_dl_lock = threading.Lock()
+_AUDIORECORDER_AVAILABLE = False
+_VOSK_AVAILABLE = False
 
-def ensure_vosk_model():
-    """Download a small Vosk model if not already present.
-
-    Env Vars:
-      VOSK_MODEL_PATH : target directory (default ./models/vosk)
-      VOSK_MODEL_URL  : override download URL (zip)
-      VOSK_SKIP_DL    : if set to 1/true, skip download
-    """
-    if os.getenv("VOSK_SKIP_DL", "").lower() in {"1","true","yes"}:
-        return
-    target = os.environ.get("VOSK_MODEL_PATH", "./models/vosk")
-    marker = os.path.join(target, ".installed")
-    if os.path.exists(marker):
-        return
-    with _vosk_dl_lock:
-        if os.path.exists(marker):  # double-check
-            return
-        os.makedirs(target, exist_ok=True)
-        url = os.environ.get("VOSK_MODEL_URL", "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip")
-        try:
-            resp = requests.get(url, timeout=180)
-            resp.raise_for_status()
-            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-                z.extractall(target)
-            with open(marker, "w") as f:
-                f.write("ok")
-            print("[voice] Vosk model installed at", target)
-        except Exception as e:
-            # Leave a partial marker to avoid retry storms within same run
-            print("[voice] Vosk model download failed:", e)
-            return
-
-try:
-    ensure_vosk_model()
-except Exception as e:
-    print("Vosk model download skipped:", e)
-# Optional imports guarded
-try:  # Audio recording widget
-    from audiorecorder import audiorecorder  # type: ignore
-    _AUDIORECORDER_AVAILABLE = True
-except Exception:
-    _AUDIORECORDER_AVAILABLE = False
-
-try:  # Vosk STT (optional)
-    import vosk  # type: ignore
-    _VOSK_AVAILABLE = True
-except Exception:
-    _VOSK_AVAILABLE = False
-
-try:  # Offline TTS
+try:  # Offline TTS (legacy fallback)
     import pyttsx3  # type: ignore
     _PYTTSX3_AVAILABLE = True
 except Exception:
     _PYTTSX3_AVAILABLE = False
 
+try:  # Edge TTS
+    import edge_tts  # type: ignore
+    _EDGETTS_AVAILABLE = True
+except Exception:
+    _EDGETTS_AVAILABLE = False
+
 # Allow disabling offline TTS explicitly (Render free tier etc.)
 _DISABLE_OFFLINE_TTS = os.getenv("DISABLE_OFFLINE_TTS", "").lower() in {"1","true","yes"}
+VOICE_DEBUG = os.getenv("VOICE_DEBUG", "0").lower() in {"1","true","yes"}
+
+logger = logging.getLogger("voice")
+if VOICE_DEBUG and not logger.handlers:
+    logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s')
+else:
+    logger.addHandler(logging.NullHandler())
 
 
-@dataclass
-class STTResult:
-    text: str
-    confidence: Optional[float] = None
-
-
-_VOSK_MODEL_CACHE = None  # Lazy-loaded model
-
-
-def _load_vosk_model():
-    """Attempt to load (and cache) a Vosk model. Returns model or None."""
-    global _VOSK_MODEL_CACHE
-    if not _VOSK_AVAILABLE:
-        return None
-    if _VOSK_MODEL_CACHE is not None:
-        return _VOSK_MODEL_CACHE
-    # Determine model path
-    candidate_paths = [
-        os.getenv("VOSK_MODEL_PATH"),
-        os.path.join("models", "vosk"),
-        os.path.join("..", "models", "vosk"),
-    ]
-    for p in candidate_paths:
-        if not p:
-            continue
-        if os.path.isdir(p):
-            try:
-                _VOSK_MODEL_CACHE = vosk.Model(p)  # type: ignore[attr-defined]
-                return _VOSK_MODEL_CACHE
-            except Exception:
-                continue
-    return None
-
-
-def record_audio(label: str = "🎤 Speak", instructions: str = "Click to start / stop recording") -> Optional[bytes]:
-    """Render an audio recorder widget and return WAV bytes once user stops.
-
-    Returns None if component unavailable or user hasn't recorded.
-    """
-    if not _AUDIORECORDER_AVAILABLE:
-        st.info("Audio recording component not installed (streamlit-audiorecorder).")
-        return None
-    st.caption(instructions)
-    audio = audiorecorder(start_prompt=label, stop_prompt="⏹️ Stop")
-    if len(audio) == 0:
-        return None
-    # Component returns pydub.AudioSegment; attempt export
-    buf = io.BytesIO()
-    try:
-        audio.export(buf, format="wav")  # type: ignore
-        return buf.getvalue()
-    except Exception:
-        # If export fails (likely missing ffmpeg), attempt raw parameters
-        try:
-            raw = audio.raw_data  # type: ignore
-            # Construct a minimal WAV header
-            import wave, struct
-            tmp = io.BytesIO()
-            with wave.open(tmp, 'wb') as wf:
-                wf.setnchannels(audio.channels)  # type: ignore
-                wf.setsampwidth(audio.sample_width)  # type: ignore
-                wf.setframerate(audio.frame_rate)  # type: ignore
-                wf.writeframes(raw)
-            return tmp.getvalue()
-        except Exception:
-            st.error("Audio export failed (missing ffmpeg). Install ffmpeg or disable voice recording.")
-            return None
-
-
-def speech_to_text(audio_bytes: bytes) -> Optional[STTResult]:
-    """Transcribe audio using first available provider (Whisper API, local Vosk, etc.)."""
-    if not audio_bytes:
-        return None
-    stt_runner = select_stt_provider()
-    out: Optional[STTOutput] = stt_runner(audio_bytes)
-    if out:
-        return STTResult(text=out.text, confidence=None)
-    st.info("No speech-to-text provider available or transcription empty.")
-    return None
+## STT & recording removed.
 
 
 def _init_tts_engine():
@@ -193,44 +71,116 @@ def _init_tts_engine():
 _TTS_ENGINE = _init_tts_engine()
 
 
-def text_to_speech(text: str, format: str = "wav") -> Optional[bytes]:
-    """Generate spoken audio for given text.
+async def generate_tts_from_text(text: str, voice: str = "en-US-JennyNeural") -> Optional[Path]:
+    """Generate an MP3 file (EdgeTTS preferred) from text.
 
-    Order:
-      1. pyttsx3 (offline) → WAV
-      2. gTTS (MP3) if installed
-      3. Browser speech fallback (no bytes)
+    Returns path to mp3 or None. Uses sanitize (markdown → plain) via normalize_for_tts.
+    Steps:
+      1. Sanitize text
+      2. EdgeTTS synth to temporary .mp3.part
+      3. Normalize sample rate to 22050 Hz using pydub/ffmpeg
+      4. Atomic rename to final .mp3
+      5. Fallback to gTTS (sync) or pyttsx3 if EdgeTTS unavailable or fails
     """
     if not text:
         return None
-    # Offline engine
-    if _TTS_ENGINE is not None and format == "wav":
-        import tempfile
-        fname = None
+    is_ssml = text.strip().lower().startswith('<speak>')
+    sanitized = text if is_ssml else normalize_for_tts(text)
+    base_dir = Path(tempfile.gettempdir()) / "vocaresume_tts"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    final_path = base_dir / f"{uuid.uuid4().hex}.mp3"
+    part_path = final_path.with_suffix('.mp3.part')
+
+    # Primary: Edge TTS
+    if _EDGETTS_AVAILABLE:
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
-                fname = tmp.name
-            _TTS_ENGINE.save_to_file(text, fname)  # type: ignore
-            _TTS_ENGINE.runAndWait()
-            with open(fname, 'rb') as f:
-                data = f.read()
-            return data if data and len(data) > 512 else None
-        except Exception:
-            pass
-        finally:
-            if fname and os.path.exists(fname):
-                with contextlib.suppress(Exception):
-                    os.remove(fname)
-    # gTTS path (MP3)
+            logger.debug(f"EdgeTTS synth start voice={voice} chars={len(sanitized)}")
+            communicate = edge_tts.Communicate(sanitized, voice)  # type: ignore
+            with part_path.open('wb') as f:
+                async for chunk in communicate.stream():  # type: ignore
+                    if chunk.get('type') == 'audio':
+                        f.write(chunk.get('data', b''))
+            # Normalize with pydub if possible
+            try:
+                from pydub import AudioSegment  # type: ignore
+                audio = AudioSegment.from_file(part_path, format='mp3')
+                audio = audio.set_frame_rate(22050)
+                audio.export(part_path, format='mp3', bitrate='64k')
+            except Exception as e:  # pragma: no cover - best effort
+                logger.debug(f"pydub normalization skipped: {e}")
+            part_path.replace(final_path)
+            logger.debug(f"EdgeTTS synth success -> {final_path}")
+            return final_path
+        except Exception as e:
+            logger.warning(f"EdgeTTS failed: {e}")
+
+    # Fallback: gTTS
     try:
         from gtts import gTTS  # type: ignore
-        import tempfile
-        mp3_buf = io.BytesIO()
-        gTTS(text).write_to_fp(mp3_buf)
-        return mp3_buf.getvalue()
-    except Exception:
-        _browser_fallback(text)
+        from pydub import AudioSegment  # type: ignore
+        tmp_mp3 = part_path
+        gTTS(sanitized).save(str(tmp_mp3))
+        try:
+            audio = AudioSegment.from_file(tmp_mp3, format='mp3')
+            audio = audio.set_frame_rate(22050)
+            audio.export(tmp_mp3, format='mp3', bitrate='64k')
+        except Exception:
+            pass
+        tmp_mp3.replace(final_path)
+        logger.info("gTTS fallback used")
+        return final_path
+    except Exception as e:
+        logger.warning(f"gTTS fallback failed: {e}")
+
+    # Legacy final fallback: pyttsx3 to wav then convert
+    if _TTS_ENGINE is not None:
+        try:
+            from pydub import AudioSegment  # type: ignore
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmpw:
+                wav_name = tmpw.name
+            _TTS_ENGINE.save_to_file(sanitized, wav_name)  # type: ignore
+            _TTS_ENGINE.runAndWait()
+            audio = AudioSegment.from_wav(wav_name)
+            audio = audio.set_frame_rate(22050)
+            audio.export(part_path, format='mp3', bitrate='64k')
+            Path(wav_name).unlink(missing_ok=True)
+            part_path.replace(final_path)
+            logger.info("pyttsx3 fallback used")
+            return final_path
+        except Exception as e:  # pragma: no cover
+            logger.error(f"pyttsx3 fallback failed: {e}")
+    return None
+
+
+def text_to_speech(text: str, format: str = "mp3") -> Optional[bytes]:
+    """Synchronous wrapper returning MP3 bytes for compatibility.
+
+    Internally invokes EdgeTTS async pipeline. If EdgeTTS unavailable, falls back
+    to legacy cascade. Returns None if all providers fail; browser fallback triggered.
+    """
+    if not text:
         return None
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            path = loop.run_until_complete(generate_tts_from_text(text))
+        finally:
+            loop.close()
+        if path and path.exists():
+            data = path.read_bytes()
+            # optionally clean up older files to avoid disk bloat
+            try:
+                for f in path.parent.glob('*.mp3'):
+                    if f != path and f.stat().st_mtime < path.stat().st_mtime - 3600:
+                        f.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return data if data and len(data) > 512 else None
+    except Exception as e:
+        logger.error(f"EdgeTTS sync wrapper failed: {e}")
+    _browser_fallback(text)
+    return None
 
 
 def _browser_fallback(text: str, suppress_msg: bool = False) -> None:
@@ -261,29 +211,14 @@ def _browser_fallback(text: str, suppress_msg: bool = False) -> None:
             st.info("Speech playback unavailable.")
 
 
-def voice_enabled() -> bool:
-    """Voice considered enabled if we can at least record and provide either STT or any TTS path.
-    Browser-only TTS counts when offline engine disabled."""
-    if not _AUDIORECORDER_AVAILABLE:
-        return False
-    # STT path
-    if _VOSK_AVAILABLE and _load_vosk_model() is not None:
-        return True
-    # Offline TTS engine
-    if _TTS_ENGINE is not None:
-        return True
-    # Browser fallback allowed
-    return True  # recorder + browser speech
+def voice_enabled() -> bool:  # Simplified definition
+    return _EDGETTS_AVAILABLE or _PYTTSX3_AVAILABLE
 
 
 def voice_stack_report() -> dict:
-    """Return diagnostics about the voice stack for UI display."""
     return {
-        "audiorecorder": _AUDIORECORDER_AVAILABLE,
-        "vosk_lib": _VOSK_AVAILABLE,
-        "vosk_model_loaded": bool(_load_vosk_model()) if _VOSK_AVAILABLE else False,
+        "edge_tts": _EDGETTS_AVAILABLE,
         "pyttsx3_lib": _PYTTSX3_AVAILABLE,
         "offline_tts_disabled": _DISABLE_OFFLINE_TTS,
         "tts_engine_ready": _TTS_ENGINE is not None,
-        "browser_tts": True,
     }

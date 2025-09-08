@@ -6,16 +6,16 @@ Modern, voice-enabled career copilot for resume intelligence: analyze strengths 
 
 ## ✨ Features
 
-| Area | Highlights |
-|------|------------|
-| Resume Analysis | Structured strengths & weaknesses grounded in JD context |
-| Suggestions | Actionable ATS + clarity improvements |
-| Interview Prep | 5 technical, resume-grounded Q&A items |
-| Job Fit Score | Numeric score + qualitative rationale + gauge viz |
-| Multi‑Provider LLM | Gemini (Pro / Flash), Groq LLaMA variants, Perplexity Sonar |
-| Voice Mode | Record (browser) → STT (Vosk or Whisper API) → intent route → TTS (pyttsx3 / gTTS / browser) |
-| Robust UI | Landing page + single-page workflow, accessible components |
-| Caching | Per (section, model) response memory for speed |
+| Area               | Highlights                                                                                                  |
+| ------------------ | ----------------------------------------------------------------------------------------------------------- |
+| Resume Analysis    | Structured strengths & weaknesses grounded in JD context                                                    |
+| Suggestions        | Actionable ATS + clarity improvements                                                                       |
+| Interview Prep     | 5 technical, resume-grounded Q&A items                                                                      |
+| Job Fit Score      | Numeric score + qualitative rationale + gauge viz                                                           |
+| Multi‑Provider LLM | Gemini (Pro / Flash), Groq LLaMA variants, Perplexity Sonar                                                 |
+| Voice Mode         | Record (browser) → STT (Vosk or Whisper API) → intent route → TTS (EdgeTTS → fallback gTTS/pyttsx3/browser) |
+| Robust UI          | Landing page + single-page workflow, accessible components                                                  |
+| Caching            | Per (section, model) response memory for speed                                                              |
 
 ## 🗂 Current Structure (Post-Cleanup)
 
@@ -74,6 +74,7 @@ streamlit run app.py
 ```
 
 ### Optional: Add Vosk Model
+
 ```bash
 mkdir -p models/vosk
 curl -L -o vosk-small.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
@@ -85,33 +86,72 @@ unzip vosk-small.zip -d models/vosk && rm vosk-small.zip
 ```bash
 pytest -q
 ```
+
 Tests include: Streamlit load smoke test + settings/env structure validation.
 
-## 🔊 Voice / STT / TTS Flow
+## 🔊 Voice / STT / TTS Flow (Updated)
 
-1. Record via `streamlit-audiorecorder` (browser mic)  
-2. STT provider selection (`stt_providers.py`): Whisper API (planned) → local Vosk (if installed)  
-3. Intent routing (voice query → task)  
-4. LLM response generation (selected provider/model)  
-5. TTS cascade: pyttsx3 (WAV) → gTTS (MP3) → browser speech  
-6. Audio + MP3 download + session history (last 30 entries)
+1. Record via `streamlit-audiorecorder` (browser mic)
+2. STT provider selection (`stt_providers.py`): Whisper API (planned) → local Vosk (if installed)
+3. Intent routing (voice query → task)
+4. LLM response generation (selected provider/model)
+5. Markdown is split into two forms:
+   - `display_md`: rich markdown for on‑screen display
+   - `tts_text`: sanitized plain text produced by `normalize_for_tts()` (no `#`, `*`, code fences)
+6. TTS cascade: EdgeTTS (neural voices, MP3 @ 22.05 kHz) → gTTS → pyttsx3 (legacy) → browser speech synthesis
+7. Audio file stored atomically and offered for playback + download; session history retains recent entries.
 
-All steps are fail-soft—no fatal UI crashes.
+All steps are fail-soft—failures log + degrade without crashing the UI.
+
+### Markdown Sanitization
+
+Implemented in `utils/text_utils.py::normalize_for_tts` using `mistune` + `BeautifulSoup`:
+
+| Markdown Input             | Sanitized Output (excerpt) |
+| -------------------------- | -------------------------- |
+| `## **Resume Analysis**`   | `Resume Analysis:`         |
+| Bullet list (`- item one`) | `• item one`               |
+| Code block ( > 80 chars )  | `(code block omitted)`     |
+
+The sanitizer collapses whitespace, strips formatting tokens, summarizes or removes verbose code, and truncates long text near a sentence boundary.
+
+### Before / After Example
+
+Input Markdown:
+
+````
+## **Resume Analysis** ##
+- Strengths: *Python*, **Data Pipelines**
+- Weaknesses: Limited cloud exp.
+```python\nprint('debug')\n```
+
+Overall fit: **High**
+````
+
+EdgeTTS Spoken Text:
+
+```
+Resume Analysis: • Strengths: Python, Data Pipelines • Weaknesses: Limited cloud exp. (code block omitted) Overall fit: High
+```
+
+No raw markdown tokens remain, eliminating prior artifacts in MP3 downloads.
 
 ## 🧱 Deployment (Render)
 
 Native (light) or Docker (full voice):
 
-| Mode | Use When | Pros | Cons |
-|------|----------|------|------|
-| Native | Basic LLM + optional browser speech | Fast build | No offline STT / offline TTS |
-| Docker | Need offline STT/TTS | Full control | Longer build |
+| Mode   | Use When                            | Pros         | Cons                         |
+| ------ | ----------------------------------- | ------------ | ---------------------------- |
+| Native | Basic LLM + optional browser speech | Fast build   | No offline STT / offline TTS |
+| Docker | Need offline STT/TTS                | Full control | Longer build                 |
 
 Ensure these in Render (native):
+
 ```
 Build: pip install -r requirements.txt
 Start: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
 ```
+
 Set env vars (keys + DISABLE_OFFLINE_TTS=1, VOSK_SKIP_DL=1).
 
 For Docker: supply a Dockerfile adding `ffmpeg`, `espeak`, `poppler-utils`, copy model if desired; unset DISABLE_OFFLINE_TTS.
@@ -122,9 +162,9 @@ Responses keyed by (section_id, model_choice). Extension idea: hash of JD + resu
 
 ## 🔐 Security
 
-* Do not commit `.env`  
-* Rotate API keys  
-* Restrict available models in `services/settings.py` if minimizing cost  
+- Do not commit `.env`
+- Rotate API keys
+- Restrict available models in `services/settings.py` if minimizing cost
 
 ## 📝 Git Flow
 
@@ -135,7 +175,9 @@ git add .
 git commit -m "feat: add faster-whisper provider"
 git push origin feat/new-voice-provider
 ```
+
 Use conventional commits (`feat:`, `fix:`, `chore:`, `docs:` ...). Tag releases when stable:
+
 ```bash
 git tag -a v1.0.0 -m "Initial cleaned structure"
 git push origin v1.0.0
@@ -143,12 +185,12 @@ git push origin v1.0.0
 
 ## ❓ Troubleshooting
 
-| Symptom | Likely Cause | Action |
-|---------|--------------|--------|
-| No transcription | Missing Vosk model / STT disabled | Install model or enable Whisper API |
-| 0:00 audio | pyttsx3 engine failed / headless env | Set DISABLE_OFFLINE_TTS=1 (fallback) |
-| PDF error | Poppler missing | Use Docker or switch to pure text input |
-| Slow response | Large token limit / heavy model | Lower Max Tokens slider |
+| Symptom          | Likely Cause                      | Action                                   |
+| ---------------- | --------------------------------- | ---------------------------------------- |
+| No transcription | Missing Vosk model / STT disabled | Install model or enable Whisper API      |
+| 0:00 audio       | pyttsx3/EdgeTTS failure           | Check logs (VOICE_DEBUG=1) fallback used |
+| PDF error        | Poppler missing                   | Use Docker or switch to pure text input  |
+| Slow response    | Large token limit / heavy model   | Lower Max Tokens slider                  |
 
 ## © 2025 VocaResume
 

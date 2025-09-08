@@ -24,3 +24,6 @@ watchdog
 langchain-openai
 langchain-groq
 langchain-google-genai
+edge-tts  # New primary TTS provider (Azure Edge voices)
+mistune
+beautifulsoup4
